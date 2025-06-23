@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.egg-info/
+.eggs/
+*.egg
+*.log
+*.sqlite3
+*.db
+*.env
+.env.*
+.venv/
+venv/
+ENV/
+
+# VSCode
+.vscode/
+.history/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# LangChain, Ollama, and FastAPI
+.cache/
+ollama/
+
+# Test/coverage
+htmlcov/
+.coverage
+.tox/
+.nox/
+
+# Misc
+*.bak
+*.swp
+*.tmp
+*.orig
+
+# Node/npm (if any JS tooling)
+node_modules/
+
+# MCP
+mcp.json
