@@ -118,22 +118,30 @@ Now, respond with your selection:
         except Exception as e:
             print(f"[route_query] Tool JSON parsing error: {e}")
         selected_tool = next((t for t in tools if t["name"] == selected_tool_name), None)
-        if selected_tool:
-            url = resolved_endpoint if resolved_endpoint else selected_agent['base_domain'] + selected_tool['endpoint_uri']
-            for param in selected_tool['path_params']:
-                if f"{{{param}}}" in url:
-                    url = url.replace(f"{{{param}}}", "sample")
-            print(f"[route_query] Invoking endpoint: {url} (method: {selected_tool['method']})")
-            try:
-                if selected_tool['method'] == "GET":
-                    r = httpx.get(url)
-                    call_result = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text
-                    print(f"[route_query] Endpoint response: {call_result}")
-            except Exception as e:
-                call_result = f"Error calling endpoint: {e}"
-                print(f"[route_query] Error calling endpoint: {e}")
-        else:
-            print("[route_query] No valid tool selected or found.")
+        # Determine method dynamically from tool metadata or LLM output
+        method = selected_tool["method"].upper() if selected_tool and "method" in selected_tool else "GET"
+        url = resolved_endpoint if resolved_endpoint else selected_agent['base_domain'] + selected_tool['endpoint_uri'] if selected_tool else None
+        # Prepare request params, body, and headers if present in LLM output
+        body_params = parsed.get("body_params", {}) if 'parsed' in locals() else {}
+        query_params = parsed.get("query_params", {}) if 'parsed' in locals() else {}
+        headers = parsed.get("headers", {}) if 'parsed' in locals() else {}
+        call_result = None
+        try:
+            if method == "GET":
+                r = httpx.get(url, params=query_params, headers=headers)
+            elif method == "POST":
+                r = httpx.post(url, params=query_params, json=body_params, headers=headers)
+            elif method == "PUT":
+                r = httpx.put(url, params=query_params, json=body_params, headers=headers)
+            elif method == "DELETE":
+                r = httpx.delete(url, params=query_params, headers=headers)
+            else:
+                r = httpx.request(method, url, params=query_params, json=body_params, headers=headers)
+            call_result = r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text
+            print(f"[route_query] Endpoint response: {call_result}")
+        except Exception as e:
+            call_result = f"Error calling endpoint: {e}"
+            print(f"[route_query] Error calling endpoint: {e}")
     else:
         print("[route_query] No valid agent selected or found.")
 
