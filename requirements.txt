@@ -1,5 +1,30 @@
-fastapi
-uvicorn
-langgraph
-httpx
-langchain_ollama
+fastapi>=0.104.0
+uvicorn>=0.24.0
+langgraph>=0.0.20
+httpx>=0.25.0
+langchain_ollama>=0.1.0
+pydantic>=2.0.0
+python-json-logger>=2.0.0
+
+# Optional vault dependencies
+# Install as needed based on your VAULT_TYPE environment variable
+
+# For Hashicorp Vault (VAULT_TYPE=hashicorp)
+# hvac>=1.2.1
+
+# For Akeyless Vault (VAULT_TYPE=akeyless)
+# akeyless>=3.0.0
+
+# For Azure Key Vault (VAULT_TYPE=azure)
+# azure-keyvault-secrets>=4.7.0
+# azure-identity>=1.15.0
+
+# For AWS Secrets Manager (VAULT_TYPE=aws)
+# boto3>=1.34.0
+
+# For GCP Secret Manager (VAULT_TYPE=gcp)
+# google-cloud-secret-manager>=2.16.0
+
+# For LLM integration
+# openai>=1.3.0  # if using OpenAI
+# anthropic>=0.7.0  # if using Anthropic
