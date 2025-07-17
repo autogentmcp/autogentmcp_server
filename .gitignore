@@ -13,6 +13,7 @@ __pycache__/
 *.db
 *.env
 .env.*
+!.env.example
 .venv/
 venv/
 ENV/

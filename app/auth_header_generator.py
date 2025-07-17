@@ -4,6 +4,7 @@ This module generates appropriate headers based on application authentication me
 """
 
 import base64
+import binascii
 import json
 import logging
 import time
@@ -30,6 +31,64 @@ class AuthenticationHeaderGenerator:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+    
+    def _process_custom_headers(self, credentials: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Process custom headers from credentials.
+        
+        Custom headers can be:
+        1. Direct dictionary in 'customHeaders' field
+        2. Base64 encoded JSON array in 'customHeaders' field
+        3. Base64 encoded JSON object in 'customHeaders' field
+        
+        Args:
+            credentials: Processed credentials dictionary
+            
+        Returns:
+            Dictionary of custom headers
+        """
+        custom_headers = {}
+        
+        # Get custom headers from credentials
+        custom_headers_raw = credentials.get('customHeaders')
+        if not custom_headers_raw:
+            return custom_headers
+        
+        try:
+            # If it's already a dict, use it directly
+            if isinstance(custom_headers_raw, dict):
+                custom_headers.update(custom_headers_raw)
+            elif isinstance(custom_headers_raw, str):
+                # Try to decode as Base64 first
+                try:
+                    decoded = base64.b64decode(custom_headers_raw).decode('utf-8')
+                    parsed = json.loads(decoded)
+                    
+                    if isinstance(parsed, list):
+                        # Handle array format: [{"name": "Header-Name", "value": "Header-Value"}]
+                        for header_item in parsed:
+                            if isinstance(header_item, dict) and 'name' in header_item and 'value' in header_item:
+                                custom_headers[header_item['name']] = header_item['value']
+                    elif isinstance(parsed, dict):
+                        # Handle object format: {"Header-Name": "Header-Value"}
+                        custom_headers.update(parsed)
+                except (base64.binascii.Error, json.JSONDecodeError):
+                    # If Base64 decoding fails, try direct JSON parsing
+                    try:
+                        parsed = json.loads(custom_headers_raw)
+                        if isinstance(parsed, dict):
+                            custom_headers.update(parsed)
+                        elif isinstance(parsed, list):
+                            for header_item in parsed:
+                                if isinstance(header_item, dict) and 'name' in header_item and 'value' in header_item:
+                                    custom_headers[header_item['name']] = header_item['value']
+                    except json.JSONDecodeError:
+                        self.logger.warning("Failed to parse custom headers as JSON")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing custom headers: {e}")
+        
+        return custom_headers
     
     def generate_headers(self, vault_key: str, authentication_method: str, 
                         endpoint_url: str = None, request_method: str = 'GET',
@@ -109,6 +168,10 @@ class AuthenticationHeaderGenerator:
             # Custom format with placeholder
             headers[header_name] = key_format.replace('{key}', api_key)
         
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
+        
         return headers
     
     def _generate_bearer_token_headers(self, credentials: Dict[str, Any], 
@@ -124,9 +187,13 @@ class AuthenticationHeaderGenerator:
         
         headers['Authorization'] = f'Bearer {token}'
         
-        # Add additional headers if specified
+        # Add additional headers if specified (legacy support)
         if 'additionalHeaders' in credentials:
             headers.update(credentials['additionalHeaders'])
+        
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
         
         return headers
     
@@ -150,6 +217,10 @@ class AuthenticationHeaderGenerator:
         
         headers['Authorization'] = f'Basic {auth_b64}'
         
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
+        
         return headers
     
     def _generate_oauth2_headers(self, credentials: Dict[str, Any], 
@@ -170,6 +241,10 @@ class AuthenticationHeaderGenerator:
         if 'scope' in credentials:
             headers['X-OAuth-Scope'] = credentials['scope']
         
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
+        
         return headers
     
     def _generate_jwt_headers(self, credentials: Dict[str, Any], 
@@ -185,6 +260,10 @@ class AuthenticationHeaderGenerator:
         
         # JWT tokens are typically sent as Bearer tokens
         headers['Authorization'] = f'Bearer {jwt_token}'
+        
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
         
         return headers
     
@@ -206,6 +285,10 @@ class AuthenticationHeaderGenerator:
         if 'tenantId' in credentials:
             headers['x-ms-tenant-id'] = credentials['tenantId']
         
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
+        
         return headers
     
     def _generate_azure_apim_headers(self, credentials: Dict[str, Any], 
@@ -226,6 +309,10 @@ class AuthenticationHeaderGenerator:
         # Add trace header if specified
         if 'traceEnabled' in credentials and credentials['traceEnabled']:
             headers['Ocp-Apim-Trace'] = 'true'
+        
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
         
         return headers
     
@@ -255,6 +342,10 @@ class AuthenticationHeaderGenerator:
         if 'sessionToken' in credentials:
             headers['x-amz-security-token'] = credentials['sessionToken']
         
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
+        
         return headers
     
     def _generate_gcp_service_account_headers(self, credentials: Dict[str, Any], 
@@ -271,6 +362,10 @@ class AuthenticationHeaderGenerator:
         # Add GCP-specific headers
         if 'projectId' in credentials:
             headers['x-goog-user-project'] = credentials['projectId']
+        
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
         
         return headers
     
@@ -310,6 +405,10 @@ class AuthenticationHeaderGenerator:
         if 'keyId' in credentials:
             headers['X-Key-Id'] = credentials['keyId']
         
+        # Add custom headers if present
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
+        
         return headers
     
     def _generate_custom_headers(self, credentials: Dict[str, Any], 
@@ -318,10 +417,14 @@ class AuthenticationHeaderGenerator:
         """Generate custom authentication headers."""
         headers = {}
         
-        # Process custom headers from credentials
-        custom_headers = credentials.get('customHeaders', {})
-        if isinstance(custom_headers, dict):
-            headers.update(custom_headers)
+        # Process custom headers from credentials (supports Base64 encoding)
+        custom_headers = self._process_custom_headers(credentials)
+        headers.update(custom_headers)
+        
+        # Process legacy custom headers format
+        legacy_custom_headers = credentials.get('legacyCustomHeaders', {})
+        if isinstance(legacy_custom_headers, dict):
+            headers.update(legacy_custom_headers)
         
         # Process header templates with credential substitution
         header_templates = credentials.get('headerTemplates', {})

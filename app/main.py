@@ -91,31 +91,6 @@ def preload_vault_cache():
         "cache_stats": cache_stats
     }
 
-@app.get("/vault/test_credential_processing")
-def test_credential_processing():
-    """Test endpoint to demonstrate credential processing with Base64 decoding."""
-    try:
-        # Get the first available vault key from cache for testing
-        cache_keys = list(vault_manager._cache.keys()) if vault_manager._cache else []
-        if not cache_keys:
-            return {"status": "error", "message": "No cached vault keys found. Try preloading cache first."}
-        
-        test_key = cache_keys[0]
-        raw_credentials = vault_manager.get_secret(test_key)
-        
-        if raw_credentials:
-            return {
-                "status": "success",
-                "message": "Credential processing working correctly",
-                "vault_key": test_key,
-                "processed_credentials": raw_credentials,
-                "note": "Sensitive fields have been automatically decoded from Base64"
-            }
-        else:
-            return {"status": "error", "message": f"No credentials found for key: {test_key}"}
-    except Exception as e:
-        return {"status": "error", "message": f"Error testing credential processing: {str(e)}"}
-
 class AuthHeaderRequest(BaseModel):
     application_id: str
     authentication_method: str
@@ -294,3 +269,7 @@ def validate_agent_credentials_from_registry(app_key: str):
         }
     except Exception as e:
         return {"status": "error", "message": f"Error validating credentials: {str(e)}"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
