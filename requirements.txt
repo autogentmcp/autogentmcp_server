@@ -6,6 +6,15 @@ langchain_ollama>=0.1.0
 pydantic>=2.0.0
 python-json-logger>=2.0.0
 
+# Database Dependencies for Data Agents
+sqlparse>=0.4.4                     # SQL query parsing and validation
+psycopg2-binary>=2.9.7              # PostgreSQL support
+mysql-connector-python>=8.1.0       # MySQL support
+google-cloud-bigquery>=3.13.0       # Google BigQuery support
+databricks-sql-connector>=2.9.3     # Databricks support
+pyodbc>=4.0.39                      # Microsoft SQL Server support
+ibm_db>=3.1.4                       # IBM DB2 support
+
 # Optional vault dependencies
 # Install as needed based on your VAULT_TYPE environment variable
 

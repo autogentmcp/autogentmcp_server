@@ -8,6 +8,7 @@ from app.session_manager import session_manager
 from app.registry import sync_registry
 from app.vault_manager import vault_manager
 from app.registry_auth_integration import registry_auth_integration
+from app.data_agents_client import data_agents_client
 
 app = FastAPI(title="MCP Registry Server", version="1.0.0")
 
@@ -269,6 +270,94 @@ def validate_agent_credentials_from_registry(app_key: str):
         }
     except Exception as e:
         return {"status": "error", "message": f"Error validating credentials: {str(e)}"}
+
+@app.get("/test/llm")
+def test_llm_connection():
+    """Test LLM connection and basic functionality."""
+    from app.llm_client import llm_client
+    return llm_client.test_connection()
+
+@app.get("/data-agents/list")
+def get_data_agents():
+    """Get all data agents."""
+    try:
+        data_agents = data_agents_client.fetch_data_agents()
+        
+        return {
+            "status": "success",
+            "data_agents": list(data_agents.values()),
+            "total_agents": len(data_agents),
+            "message": "Data agents retrieved successfully"
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Error getting data agents: {str(e)}"}
+
+@app.get("/data-agents/search")
+def search_data_agents(keywords: str):
+    """Search data agents by keywords."""
+    try:
+        keyword_list = [kw.strip() for kw in keywords.split(",")]
+        results = data_agents_client.search_data_agents_by_keywords(keyword_list)
+        
+        return {
+            "status": "success",
+            "search_keywords": keyword_list,
+            "results": results,
+            "total_matches": len(results),
+            "message": "Data agents search completed"
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Error searching data agents: {str(e)}"}
+
+@app.get("/data-agents/{agent_id}")
+def get_data_agent(agent_id: str):
+    """Get specific data agent information."""
+    try:
+        agent_info = data_agents_client.get_data_agent_info(agent_id)
+        
+        if agent_info:
+            return {
+                "status": "success",
+                "agent": agent_info,
+                "message": "Data agent information retrieved"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"Data agent {agent_id} not found"
+            }
+    except Exception as e:
+        return {"status": "error", "message": f"Error getting data agent: {str(e)}"}
+
+@app.get("/routing/candidates")
+def get_routing_candidates(query: str):
+    """Get routing candidates for a query (for debugging/testing)."""
+    try:
+        from app.unified_router import unified_router
+        
+        # Extract keywords
+        keywords = unified_router._extract_keywords(query)
+        
+        # Get candidates from both sources
+        app_candidates = unified_router._get_application_candidates(query, keywords)
+        data_agent_candidates = unified_router._get_data_agent_candidates(keywords)
+        
+        # Combine and sort
+        all_candidates = app_candidates + data_agent_candidates
+        all_candidates.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        return {
+            "status": "success",
+            "query": query,
+            "extracted_keywords": keywords,
+            "application_candidates": app_candidates,
+            "data_agent_candidates": data_agent_candidates,
+            "all_candidates": all_candidates,
+            "best_candidate": all_candidates[0] if all_candidates else None,
+            "message": "Routing candidates retrieved"
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Error getting routing candidates: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn

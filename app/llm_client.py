@@ -62,21 +62,30 @@ class LLMClient:
             Processed text response
         """
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
-        print(f"[LLMClient] Prompt:\n{full_prompt}")
+        print(f"[LLMClient] Text Prompt:\n{full_prompt}")
         
-        response = self.ollama.invoke(full_prompt)
-        llm_response = response.content if hasattr(response, 'content') else str(response)
-        print(f"[LLMClient] Raw response:\n{llm_response}")
-        
-        if allow_diagrams:
-            # Extract diagrams from <think> blocks and convert to markdown
-            processed_response = self._extract_and_replace_diagrams(llm_response)
-        else:
-            # Remove <think> blocks entirely
-            processed_response = re.sub(r'<think>[\s\S]*?</think>', '', llm_response, flags=re.IGNORECASE).strip()
-        
-        print(f"[LLMClient] Processed response:\n{processed_response}")
-        return processed_response
+        try:
+            response = self.ollama.invoke(full_prompt)
+            llm_response = response.content if hasattr(response, 'content') else str(response)
+            print(f"[LLMClient] Raw Text Response:\n{llm_response}")
+            
+            if not llm_response or llm_response.strip() == "":
+                print("[LLMClient] Warning: Empty response from LLM")
+                return "No response generated"
+            
+            if allow_diagrams:
+                # Extract diagrams from <think> blocks and convert to markdown
+                processed_response = self._extract_and_replace_diagrams(llm_response)
+            else:
+                # Remove <think> blocks entirely
+                processed_response = re.sub(r'<think>[\s\S]*?</think>', '', llm_response, flags=re.IGNORECASE).strip()
+            
+            print(f"[LLMClient] Processed Text Response:\n{processed_response}")
+            return processed_response if processed_response else "No response generated"
+            
+        except Exception as e:
+            print(f"[LLMClient] Error invoking LLM for text response: {e}")
+            return f"Error generating response: {str(e)}"
     
     def _extract_and_replace_diagrams(self, text: str) -> str:
         """Extract diagrams from <think> blocks and convert to markdown code blocks."""
@@ -161,6 +170,81 @@ Instructions:
 - Otherwise, summarize or present the result in the most appropriate and helpful way.
 - Do not add extra commentary or markdown unless formatting a table or diagram.
 """
+
+    def create_data_answer_prompt(self, query: str, sql_query: str, query_result: Dict[str, Any]) -> str:
+        """Create a prompt for formatting data query results."""
+        return f"""/no_think
+You are an expert data analyst assistant.
+
+User query: {query}
+
+SQL Query executed: {sql_query}
+
+Query result: {query_result}
+
+Instructions:
+- Present the data in a clear, user-friendly format
+- If the result contains multiple rows, format as a markdown table
+- Include relevant insights or patterns in the data if applicable
+- If there's an error in the query result, explain it clearly
+- For empty results, explain that no data was found matching the criteria
+- Do not include the raw SQL query in your response unless specifically asked
+"""
+
+    def test_connection(self) -> Dict[str, Any]:
+        """Test LLM connection with a simple prompt."""
+        try:
+            test_prompt = "Say 'Hello, LLM connection is working!' and nothing else."
+            response = self.invoke_with_text_response(test_prompt)
+            
+            return {
+                "success": bool(response),
+                "response": response,
+                "model": self.model,
+                "base_url": self.base_url
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "model": self.model,
+                "base_url": self.base_url
+            }
+
+    def create_sql_generation_prompt(self, user_query: str, schema_context: str, connection_type: str) -> str:
+        """Create an enhanced prompt for SQL query generation with structured JSON output."""
+        return f"""You are an expert SQL developer. Analyze the user request and generate a SQL query with your reasoning.
+
+USER REQUEST: {user_query}
+
+DATABASE TYPE: {connection_type}
+
+AVAILABLE TABLES AND COLUMNS:
+{schema_context}
+
+INSTRUCTIONS:
+Respond with a JSON object containing your thought process and the SQL query.
+
+REQUIRED JSON FORMAT:
+{{
+    "thought": "Your reasoning about which tables to use, relationships to join, filters to apply, etc.",
+    "query": "The exact SQL query to execute"
+}}
+
+EXAMPLES:
+For "show customers":
+{{
+    "thought": "User wants to see customer data. I need to select from the customers table.",
+    "query": "SELECT * FROM customers"
+}}
+
+For "orders by customers in NY":
+{{
+    "thought": "Need to get orders for customers in NY. This requires joining orders and customers tables, filtering by state.",
+    "query": "SELECT o.*, c.name FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.state = 'NY'"
+}}
+
+Analyze the request and provide your JSON response:"""
 
 # Global LLM client instance
 llm_client = LLMClient()
