@@ -7,7 +7,7 @@ from app.vault_manager import vault_manager
 import sqlparse
 
 class DatabaseQueryExecutor:
-    """Execute database queries for data agents using vault credentials."""
+    """Execute database queries for data agents using vault credentials with caching support."""
     
     def __init__(self):
         pass
@@ -20,7 +20,7 @@ class DatabaseQueryExecutor:
         limit: int = 100
     ) -> Dict[str, Any]:
         """
-        Execute SQL query against the database.
+        Execute SQL query against the database with vault caching support.
         
         Args:
             vault_key: Vault key for database credentials
@@ -32,13 +32,26 @@ class DatabaseQueryExecutor:
             Dictionary with query results
         """
         try:
-            # Get credentials from vault
+            print(f"[DatabaseQueryExecutor] Executing {connection_type} query with vault key: {vault_key}")
+            
+            # Get credentials from vault (with caching)
             credentials = vault_manager.get_secret(vault_key)
             if not credentials:
+                print(f"[DatabaseQueryExecutor] No credentials found for vault key: {vault_key}")
                 return {
                     "status": "error",
                     "message": f"No credentials found for vault key: {vault_key}"
                 }
+            
+            print(f"[DatabaseQueryExecutor] Retrieved credentials for vault key: {vault_key}")
+            print(f"[DatabaseQueryExecutor] Credential keys: {list(credentials.keys())}")
+            
+            # Debug: Check if password looks base64 encoded
+            password = credentials.get("password", "")
+            if password:
+                print(f"[DatabaseQueryExecutor] Password length: {len(password)}, contains special chars: {any(c in password for c in '!@#$%^&*()_+-={}[]|;:,.<>?')}")
+            else:
+                print(f"[DatabaseQueryExecutor] WARNING: No password found in credentials")
             
             # Safety validation temporarily disabled
             # if not self._is_safe_query(sql_query):

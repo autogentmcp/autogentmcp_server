@@ -92,6 +92,19 @@ def preload_vault_cache():
         "cache_stats": cache_stats
     }
 
+@app.post("/data-agents/preload_credentials")
+def preload_data_agent_credentials():
+    """Manually trigger data agent credential preloading into vault cache."""
+    result = data_agents_client.preload_vault_credentials()
+    vault_stats = vault_manager.get_cache_stats()
+    
+    return {
+        "status": result.get("status", "unknown"),
+        "message": result.get("message", "Data agent credential preload completed"),
+        "preload_result": result,
+        "vault_cache_stats": vault_stats
+    }
+
 class AuthHeaderRequest(BaseModel):
     application_id: str
     authentication_method: str

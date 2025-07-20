@@ -3,7 +3,7 @@ import json
 import base64
 import time
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from abc import ABC, abstractmethod
 
 from .utils.credential_processor import CredentialProcessor
@@ -278,6 +278,20 @@ class VaultManager:
                     if vault_key:
                         vault_keys.add(vault_key)
             
+            # Also include data agent vault keys
+            try:
+                from app.data_agents_client import data_agents_client
+                data_agents = data_agents_client.fetch_data_agents()
+                
+                for agent_id, agent_info in data_agents.items():
+                    vault_key = agent_info.get("vault_key")
+                    if vault_key:
+                        vault_keys.add(vault_key)
+                
+                print(f"[VaultManager] Found {len(data_agents)} data agents with vault keys")
+            except Exception as e:
+                print(f"[VaultManager] Error loading data agent vault keys: {e}")
+            
             print(f"[VaultManager] Found {len(vault_keys)} unique vault keys to preload")
             
             # Preload each vault key
@@ -303,6 +317,79 @@ class VaultManager:
         # Show final cache stats
         cache_stats = self.get_cache_stats()
         print(f"[VaultManager] Cache stats after preload: {cache_stats}")
+    
+    def preload_data_agent_credentials(self, data_agents: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Preload data agent vault credentials into cache for better performance.
+        
+        Args:
+            data_agents: List of data agent configurations
+            
+        Returns:
+            Dictionary with preload results
+        """
+        if not self.cache_enabled:
+            return {
+                "status": "disabled",
+                "message": "Vault caching is disabled"
+            }
+        
+        if not self.active_client:
+            return {
+                "status": "error",
+                "message": "No active vault client"
+            }
+        
+        try:
+            preloaded_count = 0
+            failed_count = 0
+            vault_keys = set()
+            
+            # Extract unique vault keys from data agents
+            for agent in data_agents:
+                # Check vault_key at agent level (from environments)
+                vault_key = agent.get("vault_key")
+                if vault_key:
+                    vault_keys.add(vault_key)
+                
+                # Also check in environments array
+                environments = agent.get("environments", [])
+                for env in environments:
+                    vault_key = env.get("vaultKey")
+                    if vault_key:
+                        vault_keys.add(vault_key)
+            
+            print(f"[VaultManager] Preloading {len(vault_keys)} data agent vault credentials")
+            
+            # Preload each vault key
+            for vault_key in vault_keys:
+                try:
+                    # Use the get_secret method which handles caching
+                    credentials = self.get_secret(vault_key)
+                    if credentials:
+                        preloaded_count += 1
+                        print(f"[VaultManager] Preloaded credentials for vault key: {vault_key}")
+                    else:
+                        failed_count += 1
+                        print(f"[VaultManager] Failed to preload vault key: {vault_key}")
+                except Exception as e:
+                    failed_count += 1
+                    print(f"[VaultManager] Error preloading vault key {vault_key}: {e}")
+            
+            return {
+                "status": "success",
+                "preloaded_count": preloaded_count,
+                "failed_count": failed_count,
+                "total_keys": len(vault_keys),
+                "vault_keys": list(vault_keys)
+            }
+            
+        except Exception as e:
+            print(f"[VaultManager] Error during data agent credential preload: {e}")
+            return {
+                "status": "error",
+                "message": f"Error during credential preload: {str(e)}"
+            }
     
     def _start_cache_cleanup_thread(self):
         """Start background thread to clean up expired cache entries."""
@@ -380,6 +467,9 @@ class VaultManager:
                     secret_data, timestamp = self._cache[key]
                     if time.time() - timestamp < self.cache_ttl:
                         print(f"[VaultManager] Cache hit for key: {key}")
+                        # Make sure cached data is processed (in case it was cached raw)
+                        if secret_data:
+                            secret_data = CredentialProcessor.process_credentials_from_storage(secret_data)
                         return secret_data
                     else:
                         # Remove expired entry

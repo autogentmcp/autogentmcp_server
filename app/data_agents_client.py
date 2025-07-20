@@ -169,6 +169,42 @@ class DataAgentsClient:
         
         return score
     
+    def preload_vault_credentials(self) -> Dict[str, Any]:
+        """
+        Preload vault credentials for all data agents to improve query performance.
+        
+        Returns:
+            Dictionary with preload results
+        """
+        try:
+            from app.vault_manager import vault_manager
+            
+            # Fetch all data agents
+            data_agents = self.fetch_data_agents()
+            
+            if not data_agents:
+                return {
+                    "status": "success",
+                    "message": "No data agents found",
+                    "preloaded_count": 0
+                }
+            
+            # Convert to list format for preload method
+            agents_list = list(data_agents.values())
+            
+            # Use vault manager to preload credentials
+            result = vault_manager.preload_data_agent_credentials(agents_list)
+            
+            print(f"[DataAgentsClient] Vault credential preload completed: {result}")
+            return result
+            
+        except Exception as e:
+            print(f"[DataAgentsClient] Error during vault credential preload: {e}")
+            return {
+                "status": "error",
+                "message": f"Error during vault credential preload: {str(e)}"
+            }
+    
     def get_connection_info(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Get database connection information for a data agent."""
         agent = self.get_data_agent_info(agent_id)
