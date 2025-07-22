@@ -1,10 +1,15 @@
-fastapi>=0.104.0
-uvicorn>=0.24.0
-langgraph>=0.0.20
-httpx>=0.25.0
-langchain_ollama>=0.1.0
-pydantic>=2.0.0
-python-json-logger>=2.0.0
+# Core FastAPI and Web Dependencies
+fastapi>=0.104.0                    # Web framework
+uvicorn>=0.24.0                     # ASGI server
+pydantic>=2.0.0                     # Data validation
+httpx>=0.25.0                       # HTTP client for API calls
+
+# Environment and Configuration
+python-dotenv>=1.0.0                # Environment variable loading
+
+# LangGraph and LLM Dependencies
+langgraph>=0.0.20                   # Graph-based workflow orchestration
+langchain_ollama>=0.1.0             # Ollama LLM integration
 
 # Database Dependencies for Data Agents
 sqlparse>=0.4.4                     # SQL query parsing and validation
@@ -15,8 +20,11 @@ databricks-sql-connector>=2.9.3     # Databricks support
 pyodbc>=4.0.39                      # Microsoft SQL Server support
 ibm_db>=3.1.4                       # IBM DB2 support
 
-# Optional vault dependencies
-# Install as needed based on your VAULT_TYPE environment variable
+# Logging and Monitoring
+python-json-logger>=2.0.0           # JSON formatted logging
+
+# Optional Vault Dependencies
+# Uncomment based on your VAULT_TYPE environment variable
 
 # For Hashicorp Vault (VAULT_TYPE=hashicorp)
 # hvac>=1.2.1
@@ -34,6 +42,17 @@ ibm_db>=3.1.4                       # IBM DB2 support
 # For GCP Secret Manager (VAULT_TYPE=gcp)
 # google-cloud-secret-manager>=2.16.0
 
-# For LLM integration
-# openai>=1.3.0  # if using OpenAI
-# anthropic>=0.7.0  # if using Anthropic
+# Optional LLM Providers
+# Uncomment based on your LLM provider
+
+# For OpenAI
+# openai>=1.3.0
+
+# For Anthropic
+# anthropic>=0.7.0
+
+# Development and Testing (optional)
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# flake8>=6.0.0
