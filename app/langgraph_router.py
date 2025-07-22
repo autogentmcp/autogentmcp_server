@@ -2,10 +2,22 @@ from app.llm_client import llm_client
 from app.session_manager import session_manager
 from app.tool_selector import tool_selector
 from app.endpoint_invoker import endpoint_invoker
+from app.unified_router import unified_router
 from typing import Dict, Any
 
 def route_query(query: dict, session_id: str = "default") -> Dict[str, Any]:
-    """Route a user query to the best agent/tool using modular components."""
+    """Route a user query to the best agent/tool using unified routing with confidence scoring."""
+    
+    # Use the new unified router that handles both applications and data agents
+    try:
+        return unified_router.route_query(query["query"], session_id)
+    except Exception as e:
+        print(f"[LangGraphRouter] Error in unified routing: {e}")
+        # Fallback to original application-only routing
+        return _fallback_application_route(query, session_id)
+
+def _fallback_application_route(query: dict, session_id: str = "default") -> Dict[str, Any]:
+    """Fallback to original application-only routing logic."""
     
     # Get conversation history
     history = session_manager.get_history_string(session_id)
@@ -20,6 +32,7 @@ def route_query(query: dict, session_id: str = "default") -> Dict[str, Any]:
         session_manager.add_to_session(session_id, query["query"], final_answer)
         return {
             "query": query["query"],
+            "route_type": "fallback",
             "agents": [],
             "selected_agent": None,
             "agent_reason": "No suitable agent found",
@@ -60,11 +73,12 @@ def route_query(query: dict, session_id: str = "default") -> Dict[str, Any]:
     
     return {
         "query": query["query"],
+        "route_type": "fallback",
         "agents": [app_key],
         "selected_agent": app_key,
-        "agent_reason": "Selected by LLM",
+        "agent_reason": "Selected by fallback LLM",
         "selected_tool": tool_name,
-        "reason": "Selected by LLM",
+        "reason": "Selected by fallback LLM",
         "call_result": call_result,
         "final_answer": final_answer
     }
