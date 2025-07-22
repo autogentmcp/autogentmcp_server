@@ -10,43 +10,115 @@ class LLMClient:
     """Wrapper for LLM interactions with consistent prompting and parsing."""
     
     def __init__(self, model: str = "qwen3:14b", base_url: str = "http://localhost:11434"):
-        self.ollama = ChatOllama(model=model, base_url=base_url, keep_alive="10m")
+        self.model = model
+        self.base_url = base_url
+        self.ollama = ChatOllama(
+            model=model, 
+            base_url=base_url, 
+            keep_alive="10m",
+            think=False,  # Disable <think> blocks globally
+            timeout=600,  # 60 second timeout
+            streaming=True  # Enable streaming by default
+        )
     
-    def invoke_with_json_response(self, prompt: str, context: str = "") -> Optional[Dict[str, Any]]:
+    async def stream_with_text_response(self, prompt: str, context: str = ""):
+        """
+        Stream response from LLM with text output.
+        
+        Args:
+            prompt: The main prompt
+            context: Additional context to include
+            
+        Yields:
+            String chunks of the response as they arrive
+        """
+        full_prompt = f"{context}\n\n{prompt}" if context else prompt
+        print(f"[LLMClient] Starting streaming LLM call")
+        
+        try:
+            # Use astream for streaming response
+            async for chunk in self.ollama.astream(full_prompt):
+                if hasattr(chunk, 'content'):
+                    yield chunk.content
+                else:
+                    yield str(chunk)
+        except Exception as e:
+            print(f"[LLMClient] Streaming LLM call failed: {e}")
+            raise Exception(f"Streaming LLM call failed: {str(e)}")
+    
+    def invoke_with_json_response(self, prompt: str, context: str = "", timeout: int = 600) -> Optional[Dict[str, Any]]:
         """
         Invoke LLM with a prompt expecting JSON response.
         
         Args:
             prompt: The main prompt
             context: Additional context to include
+            timeout: Timeout in seconds (default 600 = 10 minutes)
             
         Returns:
             Parsed JSON response or None if parsing fails
         """
+        import time
+        
         full_prompt = f"{context}\n\n{prompt}" if context else prompt
-        print(f"[LLMClient] Prompt:\n{full_prompt}")
+        print(f"[LLMClient] Invoking LLM with timeout: {timeout}s")
         
-        response = self.ollama.invoke(full_prompt)
+        try:
+            start_time = time.time()
+            response = self.ollama.invoke(full_prompt, think=False)
+            elapsed = time.time() - start_time
+            print(f"[LLMClient] LLM response received in {elapsed:.1f}s")
+            
+        except Exception as e:
+            print(f"[LLMClient] LLM invocation failed: {e}")
+            raise Exception(f"LLM call failed after timeout or error: {str(e)}")
+        
         llm_response = response.content if hasattr(response, 'content') else str(response)
-        print(f"[LLMClient] Raw response:\n{llm_response}")
         
-        # Clean response by removing <think> blocks
+        # Truncate very long responses for logging
+        response_preview = llm_response[:500] + "..." if len(llm_response) > 500 else llm_response
+        print(f"[LLMClient] Response preview:\n{response_preview}")
+        
+        # Clean response by removing <think> blocks more aggressively
         clean_response = re.sub(r'<think>[\s\S]*?</think>', '', llm_response, flags=re.IGNORECASE).strip()
-        print(f"[LLMClient] Cleaned response:\n{clean_response}")
+        
+        # Also remove any remaining think-like patterns
+        clean_response = re.sub(r'</?think[^>]*>', '', clean_response, flags=re.IGNORECASE)
+        
+        # Remove any leading/trailing non-JSON content before the first {
+        json_start = clean_response.find('{')
+        json_end = clean_response.rfind('}')
+        
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            clean_response = clean_response[json_start:json_end + 1]
+        
+        print(f"[LLMClient] Cleaned response for JSON parsing:\n{clean_response[:300]}...")
         
         try:
             parsed = json.loads(clean_response)
+            print(f"[LLMClient] Successfully parsed JSON response")
             return parsed
         except json.JSONDecodeError as e:
             print(f"[LLMClient] JSON parsing error: {e}")
-            # Try to extract JSON from the response
-            json_match = re.search(r'\{.*\}', clean_response, re.DOTALL)
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group())
-                    return parsed
-                except json.JSONDecodeError:
-                    pass
+            print(f"[LLMClient] Problematic content around error: {clean_response[max(0, e.pos-50):e.pos+50]}")
+            
+            # Try to extract JSON from the response with more aggressive pattern
+            json_patterns = [
+                r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}',  # Simple nested JSON
+                r'\{[\s\S]*\}',  # Any content between first { and last }
+            ]
+            
+            for pattern in json_patterns:
+                json_matches = re.findall(pattern, clean_response, re.DOTALL)
+                for match in json_matches:
+                    try:
+                        parsed = json.loads(match)
+                        print(f"[LLMClient] Successfully extracted and parsed JSON with pattern")
+                        return parsed
+                    except json.JSONDecodeError:
+                        continue
+                        
+            print(f"[LLMClient] No valid JSON found in response")
             return None
     
     def invoke_with_text_response(self, prompt: str, context: str = "", allow_diagrams: bool = True) -> str:
@@ -65,7 +137,7 @@ class LLMClient:
         print(f"[LLMClient] Text Prompt:\n{full_prompt}")
         
         try:
-            response = self.ollama.invoke(full_prompt)
+            response = self.ollama.invoke(full_prompt, think=False)
             llm_response = response.content if hasattr(response, 'content') else str(response)
             print(f"[LLMClient] Raw Text Response:\n{llm_response}")
             
@@ -211,40 +283,214 @@ Instructions:
                 "base_url": self.base_url
             }
 
-    def create_sql_generation_prompt(self, user_query: str, schema_context: str, connection_type: str) -> str:
+    def _extract_column_reference_from_structured_data(self, tables_data: list) -> str:
+        """Extract and format exact column names from structured table data."""
+        try:
+            column_reference = "📋 EXACT COLUMN NAMES (use these EXACT names only):\n\n"
+            
+            print(f"[DEBUG] LLMClient: Processing {len(tables_data)} tables for column reference")
+            
+            for table in tables_data:
+                table_name = table.get("tableName", "")
+                schema_name = table.get("schemaName", "public")
+                columns = table.get("columns", [])
+                
+                print(f"[DEBUG] LLMClient: Table '{table_name}' has {len(columns)} columns")
+                
+                if table_name and columns:
+                    full_table_name = f"{schema_name}.{table_name}" if schema_name != "public" else table_name
+                    column_reference += f"🏷️  {table_name}:\n"
+                    
+                    for col in columns:
+                        col_name = col.get("columnName", "")
+                        if col_name:
+                            column_reference += f"     • {col_name}\n"
+                            print(f"[DEBUG] LLMClient:   Added column: {col_name}")
+                    
+                    column_reference += "\n"
+            
+            # Add generic reminders
+            column_reference += "⚠️  CRITICAL REMINDERS:\n"
+            column_reference += "   • Use ONLY the column names listed above\n"
+            column_reference += "   • DO NOT assume or invent column names\n"
+            column_reference += "   • If you don't see a column name you expect, it doesn't exist\n"
+            column_reference += "   • Check the exact column names from the list above before writing queries\n"
+            
+            print(f"[DEBUG] LLMClient: Generated column reference ({len(column_reference)} chars):")
+            print("=" * 50)
+            print(column_reference)
+            print("=" * 50)
+            
+            return column_reference
+            
+        except Exception as e:
+            print(f"[LLMClient] Error processing structured table data: {e}")
+            return """🔍 Use ONLY the exact column names shown in the schema.
+⚠️  CRITICAL: 
+  • DO NOT assume standard column names
+  • DO NOT use variations of column names  
+  • Use exact column names from schema only
+⚠️  Verify every column name against the schema!"""
+
+    def _extract_column_reference(self, schema_context: str) -> str:
+        """Extract and format exact column names from schema context for strict validation."""
+        try:
+            column_reference = "📋 EXACT COLUMN NAMES (use these EXACT names only):\n\n"
+            
+            # Parse the schema format: "-- Table: schema.tablename" followed by "-- Key Columns:"
+            lines = schema_context.split('\n')
+            current_table = None
+            in_columns_section = False
+            
+            for line in lines:
+                line = line.strip()
+                
+                # Detect table definition
+                if line.startswith('-- Table:'):
+                    table_full_name = line.replace('-- Table:', '').strip()
+                    if '.' in table_full_name:
+                        current_table = table_full_name.split('.')[-1]  # Get just the table name
+                    else:
+                        current_table = table_full_name
+                    column_reference += f"🏷️  {current_table}:\n"
+                    in_columns_section = False
+                
+                # Detect columns section
+                elif line.startswith('-- Key Columns:'):
+                    in_columns_section = True
+                
+                # Extract column names from column definitions
+                elif in_columns_section and line.startswith('--   '):
+                    # Format: "--   column_name: datatype [PRIMARY KEY|FK -> table|NULL|NOT NULL]"
+                    col_line = line.replace('--   ', '').strip()
+                    if ':' in col_line:
+                        col_name = col_line.split(':')[0].strip()
+                        if col_name and col_name not in ['', 'Description', 'Row Count']:
+                            column_reference += f"     • {col_name}\n"
+            
+            # Add generic reminders without hard-coding table names
+            column_reference += "\n⚠️  CRITICAL REMINDERS:\n"
+            column_reference += "   • Use ONLY the column names listed above\n"
+            column_reference += "   • DO NOT assume or invent column names\n"
+            column_reference += "   • If you don't see a column name you expect, it doesn't exist\n"
+            column_reference += "   • Check the exact column names from the schema before writing queries\n"
+            
+            return column_reference
+            
+        except Exception as e:
+            print(f"[LLMClient] Error parsing schema for column reference: {e}")
+            # Fallback if parsing fails
+            return """🔍 Use ONLY the exact column names shown in the schema above.
+⚠️  CRITICAL: 
+  • DO NOT assume standard column names
+  • DO NOT use variations of column names  
+  • Use exact column names from schema only
+⚠️  Verify every column name against the schema!"""
+
+    def create_sql_generation_prompt(self, user_query: str, schema_context: str = None, connection_type: str = "unknown", tables_data: list = None) -> str:
         """Create an enhanced prompt for SQL query generation with structured JSON output."""
+        
+        # Use structured data if available, otherwise fall back to text parsing
+        if tables_data:
+            column_reference = self._extract_column_reference_from_structured_data(tables_data)
+            # Create a simple schema context from structured data
+            schema_context = self._build_schema_context_from_structured_data(tables_data)
+        else:
+            column_reference = self._extract_column_reference(schema_context or "")
+        
         return f"""You are an expert SQL developer. Analyze the user request and generate a SQL query with your reasoning.
+
+⚠️ CRITICAL: You MUST use ONLY the exact column names from the schema below. DO NOT assume or invent any column names.
 
 USER REQUEST: {user_query}
 
 DATABASE TYPE: {connection_type}
 
-AVAILABLE TABLES AND COLUMNS:
+EXACT SCHEMA DEFINITION:
 {schema_context}
 
-INSTRUCTIONS:
-Respond with a JSON object containing your thought process and the SQL query.
+STRICT COLUMN NAME REFERENCE:
+{column_reference}
+
+MANDATORY VALIDATION PROCESS:
+1. Identify which tables you need for the query
+2. For each table, find the exact column names in the schema above  
+3. Verify that every column in your SQL query exists in the schema
+4. Do NOT use assumed column names like "product_name", "customer_name", etc.
+5. Use ONLY the exact column names shown in the schema
 
 REQUIRED JSON FORMAT:
 {{
-    "thought": "Your reasoning about which tables to use, relationships to join, filters to apply, etc.",
-    "query": "The exact SQL query to execute"
+    "thought": "Step 1: Tables needed: [list]. Step 2: Exact columns from schema: [list each column with table.column format]. Step 3: Verified all columns exist in schema.",
+    "query": "The exact SQL query using ONLY the column names from the schema above"
 }}
 
-EXAMPLES:
-For "show customers":
-{{
-    "thought": "User wants to see customer data. I need to select from the customers table.",
-    "query": "SELECT * FROM customers"
-}}
+VALIDATION CHECKLIST:
+- ✅ All column names are from the schema above
+- ✅ No assumed or invented column names used
+- ✅ Table names match the schema exactly
+- ✅ Column names match the schema exactly
 
-For "orders by customers in NY":
-{{
-    "thought": "Need to get orders for customers in NY. This requires joining orders and customers tables, filtering by state.",
-    "query": "SELECT o.*, c.name FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.state = 'NY'"
-}}
+Respond with ONLY your JSON - validate every column against the schema:"""
 
-Analyze the request and provide your JSON response:"""
+    def _build_schema_context_from_structured_data(self, tables_data: list) -> str:
+        """Build a clean schema context from structured table data."""
+        context_parts = []
+        
+        for table in tables_data:
+            table_name = table.get("tableName", "")
+            schema_name = table.get("schemaName", "public")
+            description = table.get("description", "")
+            row_count = table.get("rowCount", 0)
+            columns = table.get("columns", [])
+            
+            if table_name:
+                full_table_name = f"{schema_name}.{table_name}" if schema_name != "public" else table_name
+                context_parts.append(f"Table: {full_table_name}")
+                
+                if description:
+                    # Truncate long descriptions
+                    desc_preview = description[:200] + "..." if len(description) > 200 else description
+                    context_parts.append(f"  Description: {desc_preview}")
+                
+                context_parts.append(f"  Row Count: {row_count}")
+                context_parts.append("  Columns:")
+                
+                for col in columns:
+                    col_name = col.get("columnName", "")
+                    data_type = col.get("dataType", "")
+                    nullable = "NULL" if col.get("isNullable", True) else "NOT NULL"
+                    
+                    if col.get("isPrimaryKey", False):
+                        context_parts.append(f"    - {col_name}: {data_type} PRIMARY KEY")
+                    elif col.get("isForeignKey", False):
+                        ref_table = col.get("referencedTable", "")
+                        context_parts.append(f"    - {col_name}: {data_type} FK -> {ref_table}")
+                    else:
+                        context_parts.append(f"    - {col_name}: {data_type} {nullable}")
+                
+                context_parts.append("")
+        
+        return "\n".join(context_parts)
+
+    def create_structured_json_prompt(self, base_prompt: str, json_format: str, examples: str = "") -> str:
+        """Create a robust prompt that enforces JSON-only output."""
+        prompt = f"""CRITICAL INSTRUCTIONS:
+- Respond ONLY with valid JSON
+- Do NOT use <think> blocks, explanations, or any text outside the JSON
+- Do NOT include markdown code blocks or formatting
+- Your entire response must be parseable JSON
+
+{base_prompt}
+
+REQUIRED JSON FORMAT:
+{json_format}
+
+{examples}
+
+Remember: Respond with ONLY the JSON object, nothing else."""
+        
+        return prompt
 
 # Global LLM client instance
 llm_client = LLMClient()

@@ -6,6 +6,13 @@ from typing import Dict, Any, Optional
 
 from app.vault_manager import vault_manager
 
+# Global cache for detailed data agent responses
+_data_agent_details_cache = {
+    "cache": {},
+    "last_fetch": 0,
+    "ttl": 300  # 5 minutes TTL
+}
+
 def fetch_agents_and_tools_from_registry(force_refresh=False):
     """Fetches the agent (app) and endpoint (tool) metadata from the registry endpoint and returns a dict of agents. Uses cache unless expired or force_refresh=True."""
     if not hasattr(fetch_agents_and_tools_from_registry, "_cache"):
@@ -24,16 +31,23 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
     registry_admin_key = os.getenv("REGISTRY_ADMIN_KEY", "9e2b7c1e-4f3a-4b8e-9c2d-7a1e5b6c8d2f")
     environment = os.getenv("REGISTRY_ENVIRONMENT", "production")
     
-    REGISTRY_URL = f"{registry_url}/applications/with-endpoints?environment={environment}"
+    # Fetch both applications and data agents
+    applications_url = f"{registry_url}/applications/with-endpoints?environment={environment}"
+    data_agents_url = f"{registry_url}/data-agents/with-environment-details?environment={environment}"
     
     try:
         headers = {"X-Admin-Key": registry_admin_key}
-        resp = httpx.get(REGISTRY_URL, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        
         agents = {}
-        for app in data:
+        
+        # Fetch applications first
+        print(f"[Registry] Fetching applications from: {applications_url}")
+        app_resp = httpx.get(applications_url, headers=headers, timeout=10)
+        app_resp.raise_for_status()
+        applications_data = app_resp.json()
+        print(f"[Registry] Found {len(applications_data)} applications")
+        
+        # Process applications
+        for app in applications_data:
             app_key = app.get("appKey")
             if not app_key:
                 continue
@@ -43,10 +57,16 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
             base_domain = environment_info.get("baseDomain", "")
             security_config = environment_info.get("security")
             
+            # Extract vault key from security config for applications
+            vault_key = ""
+            if security_config and security_config.get("vaultKey"):
+                vault_key = security_config["vaultKey"]
+            
             # Create agent structure
             agents[app_key] = {
                 "id": app.get("id"),
                 "name": app.get("name"),
+                "appKey": app_key,  # Add appKey field explicitly
                 "description": app.get("description", app_key),
                 "base_domain": base_domain,
                 "authentication_method": app.get("authenticationMethod"),
@@ -54,7 +74,10 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
                 "status": app.get("status"),
                 "environment": environment_info,
                 "security_config": security_config,
-                "tools": []
+                "vault_key": vault_key,  # Add vault key for applications
+                "agent_type": "application",  # Explicitly set type
+                "tools": [],
+                "endpoints": []  # Add endpoints field for enhanced orchestrator
             }
             
             # Process endpoints as tools
@@ -74,6 +97,104 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
                     "full_url": f"{base_domain}{endpoint.get('path')}"
                 }
                 agents[app_key]["tools"].append(tool)
+                # Also add to endpoints field for enhanced orchestrator
+                agents[app_key]["endpoints"].append(endpoint)
+        
+        # Fetch data agents
+        print(f"[Registry] Fetching data agents from: {data_agents_url}")
+        try:
+            data_agent_resp = httpx.get(data_agents_url, headers=headers, timeout=10)
+            data_agent_resp.raise_for_status()
+            data_agents_data = data_agent_resp.json()
+            print(f"[Registry] Found {len(data_agents_data)} data agents")
+            
+            # Process data agents
+            for data_agent in data_agents_data:
+                agent_key = data_agent.get("id")  # Use 'id' as the key
+                if not agent_key:
+                    continue
+                
+                # Cache the full data agent response for later detailed access
+                _data_agent_details_cache["cache"][agent_key] = data_agent
+                
+                # Extract connection information from environments
+                environments = data_agent.get("environments", [])
+                connection_info = {}
+                database_type = data_agent.get("connectionType", "unknown")
+                
+                # Get connection config from the first active environment
+                for env in environments:
+                    if env.get("status") == "ACTIVE":
+                        connection_info = env.get("connectionConfig", {})
+                        break
+                
+                # If no active environment, use the first one
+                if not connection_info and environments:
+                    connection_info = environments[0].get("connectionConfig", {})
+                
+                # Create data agent structure - capture ALL available data
+                agents[agent_key] = {
+                    "id": data_agent.get("id"),
+                    "name": data_agent.get("name"),
+                    "description": data_agent.get("description", f"Data agent for {database_type}"),
+                    "database_type": database_type,
+                    "connection_info": connection_info,
+                    "status": data_agent.get("status"),
+                    "agent_type": "data_agent",  # Mark as data agent
+                    "security_config": {},  # Will be populated from environments
+                    
+                    # Capture available data from the new structure
+                    "schema": connection_info.get("schema", ""),
+                    "tables": data_agent.get("tables", []),
+                    "metadata": {},  # Not available in this structure
+                    "capabilities": [],  # Not available in this structure
+                    "sample_queries": [],  # Not available in this structure
+                    "business_context": data_agent.get("description", ""),
+                    "data_sources": [],  # Not available in this structure
+                    "environments": environments,  # Keep all environment details
+                    "relations": data_agent.get("relations", []),
+                    "vault_key": "",  # Will be populated from environments
+                    "created_at": data_agent.get("createdAt"),
+                    "updated_at": data_agent.get("updatedAt"),
+                    
+                    # Store the complete original data for reference
+                    "raw_data": data_agent,
+                    
+                    "tools": [
+                        {
+                            "id": f"{agent_key}_query",
+                            "name": "execute_sql_query",
+                            "description": f"Execute SQL queries on {database_type} database",
+                            "method": "POST",
+                            "database_type": database_type
+                        },
+                        {
+                            "id": f"{agent_key}_schema",
+                            "name": "get_database_schema",
+                            "description": f"Get schema information for {database_type} database",
+                            "method": "GET",
+                            "database_type": database_type
+                        }
+                    ]
+                }
+                
+                # Extract vault key from the active environment
+                for env in environments:
+                    if env.get("status") == "ACTIVE":
+                        # For data agents, vault key is directly in the environment
+                        if env.get("vaultKey"):
+                            agents[agent_key]["vault_key"] = env["vaultKey"]
+                            agents[agent_key]["security_config"] = {"vaultKey": env["vaultKey"]}
+                        break
+                
+        except Exception as e:
+            print(f"[Registry] Error fetching data agents: {e}")
+            print("[Registry] Continuing with applications only...")
+        
+        print(f"[Registry] Total agents loaded: {len(agents)} (applications + data agents)")
+        
+        # Update data agent details cache timestamp
+        _data_agent_details_cache["last_fetch"] = now
         
         _registry_cache["agents"] = agents
         _registry_cache["last_fetch"] = now
@@ -82,10 +203,176 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
         print(f"[fetch_agents_and_tools_from_registry] Error: {e}")
         return _registry_cache["agents"] or {}
 
+def get_cached_data_agent_details(agent_key: str) -> Optional[Dict[str, Any]]:
+    """Get cached detailed data agent information for LLM query generation."""
+    import time
+    
+    # Check if cache is still valid
+    now = time.time()
+    if (now - _data_agent_details_cache["last_fetch"]) > _data_agent_details_cache["ttl"]:
+        print(f"[Registry] Data agent details cache expired, refreshing...")
+        # Refresh the cache by fetching agents again
+        fetch_agents_and_tools_from_registry(force_refresh=True)
+    
+    # Get the cached detailed data
+    cached_data = _data_agent_details_cache["cache"].get(agent_key)
+    if not cached_data:
+        print(f"[Registry] No cached details found for data agent: {agent_key}")
+        return None
+    
+    print(f"[Registry] Retrieved cached details for data agent: {agent_key}")
+    print(f"[Registry] Available fields: {list(cached_data.keys())}")
+    
+    return cached_data
+
+def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any]]:
+    """Get enhanced agent details specifically formatted for LLM query generation."""
+    # Get basic agent info from registry
+    agents = fetch_agents_and_tools_from_registry()
+    agent = agents.get(agent_key)
+    
+    if not agent:
+        print(f"[Registry] Agent not found: {agent_key}")
+        return None
+    
+    # If it's a data agent, get cached detailed information
+    if agent.get("agent_type") == "data_agent":
+        cached_details = get_cached_data_agent_details(agent_key)
+        
+        if cached_details:
+            # Combine basic agent info with detailed cached data
+            enhanced_details = agent.copy()
+            
+            # Extract rich information from the cached response
+            tables = cached_details.get("tables", [])
+            relations = cached_details.get("relations", [])
+            environments = cached_details.get("environments", [])
+            
+            # Build comprehensive schema information
+            schema_info_parts = []
+            table_summaries = []
+            sample_queries = []
+            
+            # Process tables for detailed schema info
+            for table in tables:
+                table_name = table.get("tableName", "")
+                schema_name = table.get("schemaName", "public")
+                description = table.get("description", "")
+                row_count = table.get("rowCount", 0)
+                
+                if table_name:
+                    table_info = f"\n-- Table: {schema_name}.{table_name}"
+                    if description:
+                        # Truncate long descriptions but keep meaningful content
+                        desc_preview = description[:300] + "..." if len(description) > 300 else description
+                        table_info += f"\n-- Description: {desc_preview}"
+                    table_info += f"\n-- Row Count: {row_count}"
+                    
+                    # Add key column information
+                    columns = table.get("columns", [])
+                    if columns:
+                        table_info += f"\n-- Key Columns:"
+                        for col in columns[:8]:  # Limit to first 8 columns to avoid token overflow
+                            col_name = col.get("columnName", "")
+                            data_type = col.get("dataType", "")
+                            nullable = "NULL" if col.get("isNullable", True) else "NOT NULL"
+                            
+                            if col.get("isPrimaryKey", False):
+                                table_info += f"\n--   {col_name}: {data_type} PRIMARY KEY"
+                            elif col.get("isForeignKey", False):
+                                ref_table = col.get("referencedTable", "")
+                                table_info += f"\n--   {col_name}: {data_type} FK -> {ref_table}"
+                            else:
+                                table_info += f"\n--   {col_name}: {data_type} {nullable}"
+                    
+                    schema_info_parts.append(table_info)
+                    table_summaries.append({
+                        "name": f"{schema_name}.{table_name}",
+                        "description": description[:100] + "..." if len(description) > 100 else description,
+                        "row_count": row_count,
+                        "column_count": len(columns)
+                    })
+            
+            # Extract sample queries from relations
+            for relation in relations:
+                example = relation.get("example", "")
+                description = relation.get("description", "")
+                if example and example not in sample_queries:
+                    query_with_context = f"-- {description}\n{example}" if description else example
+                    sample_queries.append(query_with_context)
+            
+            # Get connection details and vault key from active environment
+            connection_details = {}
+            vault_key = ""
+            if environments:
+                active_env = next((env for env in environments if env.get("status") == "ACTIVE"), environments[0] if environments else None)
+                if active_env:
+                    connection_details = active_env.get("connectionConfig", {})
+                    vault_key = active_env.get("vaultKey", "")
+            
+            # Create enhanced details with comprehensive information
+            enhanced_details.update({
+                # Core information
+                "name": cached_details.get("name", enhanced_details.get("name", "")),
+                "description": cached_details.get("description", enhanced_details.get("description", "")),
+                "database_type": cached_details.get("connectionType", enhanced_details.get("database_type", "")),
+                
+                # Security information from environment (correct location)
+                "vault_key": vault_key,
+                "security_config": {"vaultKey": vault_key} if vault_key else {},
+                
+                # Rich schema information for LLM
+                "schema": "\n".join(schema_info_parts),
+                "tables": table_summaries,
+                "table_relations": relations,
+                "sample_queries": sample_queries,
+                
+                # Metadata for context
+                "metadata": {
+                    "total_tables": len(tables),
+                    "total_relations": len(relations),
+                    "database_type": cached_details.get("connectionType", "unknown"),
+                    "status": cached_details.get("status", "unknown"),
+                    "total_rows": sum(t.get("rowCount", 0) for t in tables)
+                },
+                
+                # Capabilities and context
+                "capabilities": [
+                    "Complex SQL query execution",
+                    "Multi-table joins with relationships",
+                    "Schema introspection and analysis", 
+                    "Data type validation and constraints"
+                ],
+                "business_context": cached_details.get("description", ""),
+                "connection_details": connection_details,
+                "environments": environments,
+                
+                # Store full response for debugging
+                "raw_response": cached_details
+            })
+            
+            print(f"[Registry] Enhanced details prepared for LLM:")
+            print(f"  - Agent: {enhanced_details.get('name')}")
+            print(f"  - Tables: {len(tables)}")
+            print(f"  - Relations: {len(relations)}")
+            print(f"  - Sample Queries: {len(sample_queries)}")
+            print(f"  - Total Fields: {len(enhanced_details)}")
+            
+            return enhanced_details
+    
+    # For non-data agents, return basic agent info
+    return agent
+
 def sync_registry():
     """Manually sync the registry cache and preload vault cache."""
+    global _data_agent_details_cache
+    
+    # Clear the data agent details cache before refresh
+    _data_agent_details_cache["cache"].clear()
+    
     agents = fetch_agents_and_tools_from_registry(force_refresh=True)
     print(f"[Registry] Manual sync completed: {len(agents)} agents loaded")
+    print(f"[Registry] Data agent details cache updated with {len(_data_agent_details_cache['cache'])} entries")
     
     # Preload vault cache after manual sync
     try:
@@ -186,8 +473,12 @@ def _auto_reload_registry():
     """Background thread to auto-refresh the registry cache every ttl seconds."""
     while True:
         try:
+            # Clear the data agent details cache before refresh
+            _data_agent_details_cache["cache"].clear()
+            
             agents = fetch_agents_and_tools_from_registry(force_refresh=True)
             print(f"[Registry] Auto-reload completed: {len(agents)} agents loaded")
+            print(f"[Registry] Data agent details cache updated with {len(_data_agent_details_cache['cache'])} entries")
             
             # Preload vault cache after registry refresh
             try:

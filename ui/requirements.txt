@@ -1,0 +1,14 @@
+# Streamlit UI Requirements
+streamlit>=1.29.0
+requests>=2.31.0
+pandas>=2.0.0
+aiohttp>=3.8.0
+plotly>=5.17.0  # For advanced charts
+streamlit-webrtc>=0.47.0  # For real-time streaming
+streamlit-aggrid>=0.3.0  # For interactive tables
+streamlit-option-menu>=0.3.0  # For better navigation
+
+# Optional: Advanced UI components
+# streamlit-elements>=0.1.0  # For custom React components
+# streamlit-ace>=0.1.1  # For code editing
+# streamlit-autorefresh>=0.0.1  # For auto-refresh
