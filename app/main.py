@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 import uuid
 import json
 import asyncio
+from dotenv import load_dotenv
 
 from app.langgraph_router import route_query
 from app.auth_handler import auth_handler
@@ -15,6 +16,8 @@ from app.vault_manager import vault_manager
 from app.registry_auth_integration import registry_auth_integration
 from app.data_agents_client import data_agents_client
 from app.langgraph_orchestrator import convert_decimals_to_float
+
+load_dotenv()
 
 app = FastAPI(title="MCP Registry Server", version="1.0.0")
 
