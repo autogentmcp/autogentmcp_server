@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional, List
 from app.vault_manager import vault_manager
 import sqlparse
 
+print("[DatabaseQueryExecutor] Module loaded - debugging is active!")
+
 class DatabaseQueryExecutor:
     """Execute database queries for data agents using vault credentials with caching support."""
     
@@ -245,7 +247,11 @@ class DatabaseQueryExecutor:
             Dictionary with query results
         """
         try:
-            print(f"[DatabaseQueryExecutor] Executing {connection_type} query with vault key: {vault_key}")
+            print(f"[DatabaseQueryExecutor.execute_query] 🔍 STARTING EXECUTION")
+            print(f"[DatabaseQueryExecutor.execute_query] Connection type: {connection_type}")
+            print(f"[DatabaseQueryExecutor.execute_query] Vault key: {vault_key}")
+            print(f"[DatabaseQueryExecutor.execute_query] Original query: {sql_query}")
+            print(f"[DatabaseQueryExecutor.execute_query] Limit: {limit}")
             
             # Get credentials from vault (with caching)
             credentials = vault_manager.get_secret(vault_key)
@@ -259,12 +265,16 @@ class DatabaseQueryExecutor:
             print(f"[DatabaseQueryExecutor] Retrieved credentials for vault key: {vault_key}")
             print(f"[DatabaseQueryExecutor] Credential keys: {list(credentials.keys())}")
             
-            # Debug: Check if password looks base64 encoded
-            password = credentials.get("password", "")
-            if password:
-                print(f"[DatabaseQueryExecutor] Password length: {len(password)}, contains special chars: {any(c in password for c in '!@#$%^&*()_+-={}[]|;:,.<>?')}")
+            # Debug: Check if password looks base64 encoded (only for databases that use passwords)
+            password_based_dbs = ["postgresql", "mysql", "mssql", "sqlserver", "db2"]
+            if connection_type.lower() in password_based_dbs:
+                password = credentials.get("password", "")
+                if password:
+                    print(f"[DatabaseQueryExecutor] Password length: {len(password)}, contains special chars: {any(c in password for c in '!@#$%^&*()_+-={}[]|;:,.<>?')}")
+                else:
+                    print(f"[DatabaseQueryExecutor] WARNING: No password found in credentials for {connection_type}")
             else:
-                print(f"[DatabaseQueryExecutor] WARNING: No password found in credentials")
+                print(f"[DatabaseQueryExecutor] Database type {connection_type} uses service account or token-based authentication")
             
             # Safety validation temporarily disabled
             # if not self._is_safe_query(sql_query):
@@ -274,7 +284,9 @@ class DatabaseQueryExecutor:
             #     }
             
             # Add limit if not present
+            print(f"[DatabaseQueryExecutor.execute_query] ⚡ CALLING _add_limit_to_query")
             sql_query = self._add_limit_to_query(sql_query, limit, connection_type)
+            print(f"[DatabaseQueryExecutor.execute_query] ✅ Query after limit processing: {sql_query}")
             
             # Execute based on connection type
             if connection_type.lower() == "postgresql":
@@ -405,10 +417,38 @@ class DatabaseQueryExecutor:
         """Add LIMIT/TOP clause to query if not present, based on database type."""
         query_upper = sql_query.upper()
         
+        # Debug: Log the connection type and query for troubleshooting
+        print(f"[DatabaseQueryExecutor._add_limit_to_query] Connection type: {connection_type}, Query has TOP: {'TOP' in query_upper}, Query has LIMIT: {'LIMIT' in query_upper}")
+        
         # SQL Server uses TOP instead of LIMIT
-        if connection_type and connection_type.lower() in ["mssql", "sqlserver"]:
-            if "TOP" not in query_upper and "LIMIT" not in query_upper:
-                # Insert TOP after SELECT
+        if connection_type and connection_type.lower() in ["mssql", "sqlserver", "sql-server", "microsoft-sql-server"]:
+            print(f"[DatabaseQueryExecutor._add_limit_to_query] Detected SQL Server database")
+            
+            # CRITICAL FIX: Convert LIMIT to TOP for SQL Server
+            if "LIMIT" in query_upper:
+                print(f"[DatabaseQueryExecutor._add_limit_to_query] 🔧 CONVERTING LIMIT TO TOP for SQL Server")
+                # Extract LIMIT value
+                import re
+                limit_match = re.search(r'\bLIMIT\s+(\d+)', sql_query, re.IGNORECASE)
+                if limit_match:
+                    limit_value = limit_match.group(1)
+                    # Remove LIMIT clause
+                    sql_query_without_limit = re.sub(r'\s*LIMIT\s+\d+\s*', '', sql_query, flags=re.IGNORECASE).rstrip(';')
+                    
+                    # Add TOP clause after SELECT
+                    query_parts = sql_query_without_limit.strip().split()
+                    if query_parts and query_parts[0].upper() == "SELECT":
+                        if len(query_parts) > 1 and query_parts[1].upper() == "DISTINCT":
+                            # Handle SELECT DISTINCT
+                            converted_query = f"SELECT DISTINCT TOP {limit_value} " + " ".join(query_parts[2:])
+                        else:
+                            # Regular SELECT
+                            converted_query = f"SELECT TOP {limit_value} " + " ".join(query_parts[1:])
+                        print(f"[DatabaseQueryExecutor._add_limit_to_query] ✅ CONVERTED: {sql_query} -> {converted_query}")
+                        return converted_query
+            
+            elif "TOP" not in query_upper:
+                # Insert TOP after SELECT (original logic)
                 query_parts = sql_query.strip().split()
                 if query_parts and query_parts[0].upper() == "SELECT":
                     if len(query_parts) > 1 and query_parts[1].upper() == "DISTINCT":
@@ -427,11 +467,16 @@ class DatabaseQueryExecutor:
                             return f"{before_select}SELECT DISTINCT TOP {limit} {after_select[8:].strip()}"
                         else:
                             return f"{before_select}SELECT TOP {limit} {after_select}"
+            print(f"[DatabaseQueryExecutor._add_limit_to_query] SQL Server query returned as-is: {sql_query[:100]}...")
             return sql_query.rstrip(';')
         else:
             # PostgreSQL, MySQL, etc. use LIMIT
+            # Only add LIMIT if no limiting clause exists (TOP or LIMIT)
+            print(f"[DatabaseQueryExecutor._add_limit_to_query] Detected non-SQL Server database ({connection_type})")
             if "LIMIT" not in query_upper and "TOP" not in query_upper:
+                print(f"[DatabaseQueryExecutor._add_limit_to_query] Adding LIMIT to query")
                 return f"{sql_query.rstrip(';')} LIMIT {limit}"
+            print(f"[DatabaseQueryExecutor._add_limit_to_query] Query already has limiting clause, returning as-is")
             return sql_query
     
     def _execute_postgresql(self, credentials: Dict[str, Any], sql_query: str) -> Dict[str, Any]:
@@ -518,9 +563,12 @@ class DatabaseQueryExecutor:
             import tempfile
             import os
             
-            # Handle service account credentials
-            service_account_json = credentials.get("service_account_json")
+            # Handle service account credentials - check both camelCase and snake_case
+            service_account_json = credentials.get("serviceAccountJson") or credentials.get("service_account_json")
+            project_id = credentials.get("projectId") or credentials.get("project_id")
+            
             if service_account_json:
+                print(f"[DatabaseQueryExecutor] Using service account authentication for BigQuery")
                 # Create temporary credentials file
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
                     if isinstance(service_account_json, str):
@@ -536,8 +584,8 @@ class DatabaseQueryExecutor:
                     # Clean up temporary file
                     os.unlink(temp_creds_path)
             else:
+                print(f"[DatabaseQueryExecutor] Using default credentials with project ID: {project_id}")
                 # Use default credentials or project ID
-                project_id = credentials.get("project_id")
                 client = bigquery.Client(project=project_id)
             
             # Execute query

@@ -408,7 +408,7 @@ Just ask me anything in natural language, and I'll figure out the best way to he
                 resolved_endpoint = base_domain + endpoint_path
             
             # Invoke endpoint
-            call_result = endpoint_invoker.invoke_endpoint(
+            call_result = endpoint_invoker.invoke_registry_endpoint(
                 app_key=app_key,
                 agent_info=agent_info,
                 tool_info=tool_info,
@@ -576,7 +576,8 @@ Just ask me anything in natural language, and I'll figure out the best way to he
             prompt = llm_client.create_sql_generation_prompt(
                 user_query=query,
                 connection_type=connection_type,
-                tables_data=tables_data  # Pass structured data directly
+                tables_data=tables_data,  # Pass structured data directly
+                agent_name=agent.get('name', 'Unknown Agent'),
             )
             
             print(f"[DEBUG] Generated prompt length: {len(prompt)} characters")

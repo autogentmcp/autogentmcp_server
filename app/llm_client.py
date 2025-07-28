@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 class LLMClient:
     """Wrapper for LLM interactions with consistent prompting and parsing."""
     
-    def __init__(self, model: str = "qwen3:14b", base_url: str = "http://localhost:11434"):
+    def __init__(self, model: str = "qwen2.5:32b", base_url: str = "http://localhost:11434"):
         self.model = model
         self.base_url = base_url
         self.ollama = ChatOllama(
@@ -46,6 +46,21 @@ class LLMClient:
             print(f"[LLMClient] Streaming LLM call failed: {e}")
             raise Exception(f"Streaming LLM call failed: {str(e)}")
     
+    def invoke(self, prompt: str, context: str = "", timeout: int = 600):
+        """
+        General invoke method for compatibility.
+        Returns a response object with a content attribute.
+        """
+        full_prompt = f"{context}\n\n{prompt}" if context else prompt
+        print(f"[LLMClient] General invoke with timeout: {timeout}s")
+        
+        try:
+            response = self.ollama.invoke(full_prompt, think=False)
+            return response
+        except Exception as e:
+            print(f"[LLMClient] General invoke failed: {e}")
+            raise Exception(f"LLM call failed: {str(e)}")
+
     def invoke_with_json_response(self, prompt: str, context: str = "", timeout: int = 600) -> Optional[Dict[str, Any]]:
         """
         Invoke LLM with a prompt expecting JSON response.
@@ -84,6 +99,16 @@ class LLMClient:
         
         # Also remove any remaining think-like patterns
         clean_response = re.sub(r'</?think[^>]*>', '', clean_response, flags=re.IGNORECASE)
+        
+        # Remove JavaScript-style comments that break JSON parsing
+        # Remove single-line comments (// comment) but not URLs (http://)
+        clean_response = re.sub(r'(?<!:)//[^\r\n]*', '', clean_response)
+        
+        # Remove multi-line comments (/* comment */)
+        clean_response = re.sub(r'/\*[\s\S]*?\*/', '', clean_response)
+        
+        # Remove trailing commas that might break JSON
+        clean_response = re.sub(r',\s*([}\]])', r'\1', clean_response)
         
         # Remove any leading/trailing non-JSON content before the first {
         json_start = clean_response.find('{')
@@ -244,7 +269,55 @@ Instructions:
 """
 
     def create_data_answer_prompt(self, query: str, sql_query: str, query_result: Dict[str, Any]) -> str:
-        """Create a prompt for formatting data query results."""
+        """Create a dynamic prompt for formatting data query results based on query type."""
+        
+        # Analyze query type to provide appropriate formatting instructions
+        query_lower = query.lower()
+        
+        # Determine query type and provide specific instructions
+        if any(word in query_lower for word in ['inventory', 'stock', 'reorder', 'supplier']):
+            specific_instructions = """
+- Show specific product names, current stock levels, reorder points, and supplier details
+- Format as a table with columns: Product Name, Current Stock, Reorder Level, Store/Location, Supplier
+- Highlight items that need immediate attention (low stock, out of stock)
+- Include actionable recommendations for specific products"""
+            
+        elif any(word in query_lower for word in ['sales', 'revenue', 'profit', 'performance']):
+            specific_instructions = """
+- Show specific sales figures, product names, dates, and performance metrics
+- Format as a table with relevant columns: Product/Item, Sales Amount, Quantity Sold, Date/Period
+- Include actual numbers and percentages, not generic summaries
+- Highlight top performers and trends with specific data points"""
+            
+        elif any(word in query_lower for word in ['customer', 'client', 'user']):
+            specific_instructions = """
+- Show specific customer names, IDs, contact information, and relevant metrics
+- Format as a table with columns: Customer Name, ID, Location, Relevant Metrics
+- Include actual customer details and behavioral data
+- Provide actionable insights about specific customers"""
+            
+        elif any(word in query_lower for word in ['employee', 'staff', 'worker']):
+            specific_instructions = """
+- Show specific employee names, roles, departments, and relevant metrics
+- Format as a table with columns: Employee Name, Role, Department, Relevant Data
+- Include actual employee information and performance metrics
+- Provide specific insights about workforce data"""
+            
+        elif any(word in query_lower for word in ['order', 'purchase', 'transaction']):
+            specific_instructions = """
+- Show specific order details, dates, amounts, and customer information
+- Format as a table with columns: Order ID, Date, Customer, Amount, Status
+- Include actual transaction data and order specifics
+- Provide insights about specific orders and purchasing patterns"""
+            
+        else:
+            # Generic instructions for other types of queries
+            specific_instructions = """
+- Show the actual data with specific details and names from the query results
+- Format as a table if multiple rows with relevant columns from the data
+- Include specific values, names, IDs, and metrics from the actual results
+- Provide actionable insights based on the specific data returned"""
+        
         return f"""/no_think
 You are an expert data analyst assistant.
 
@@ -254,13 +327,19 @@ SQL Query executed: {sql_query}
 
 Query result: {query_result}
 
-Instructions:
-- Present the data in a clear, user-friendly format
+General Instructions:
+- ALWAYS show the actual data with specific details from the query results
+- Do NOT provide generic summaries - show the concrete data the user requested
 - If the result contains multiple rows, format as a markdown table
-- Include relevant insights or patterns in the data if applicable
 - If there's an error in the query result, explain it clearly
 - For empty results, explain that no data was found matching the criteria
+- Focus on actionable, specific information rather than high-level insights
 - Do not include the raw SQL query in your response unless specifically asked
+
+Query-Specific Instructions:
+{specific_instructions}
+
+CRITICAL: Show actual data with specific names, values, and details - not generic summaries like "100 items" or "various locations"
 """
 
     def test_connection(self) -> Dict[str, Any]:
@@ -299,7 +378,7 @@ Instructions:
                 
                 if table_name and columns:
                     full_table_name = f"{schema_name}.{table_name}" if schema_name != "public" else table_name
-                    column_reference += f"🏷️  {table_name}:\n"
+                    column_reference += f"🏷️  {full_table_name}:\n"
                     
                     for col in columns:
                         col_name = col.get("columnName", "")
@@ -314,6 +393,7 @@ Instructions:
             column_reference += "   • Use ONLY the column names listed above\n"
             column_reference += "   • DO NOT assume or invent column names\n"
             column_reference += "   • If you don't see a column name you expect, it doesn't exist\n"
+            column_reference += "   • Use schema-qualified table names (e.g., schema.table_name)\n"
             column_reference += "   • Check the exact column names from the list above before writing queries\n"
             
             print(f"[DEBUG] LLMClient: Generated column reference ({len(column_reference)} chars):")
@@ -387,51 +467,94 @@ Instructions:
   • Use exact column names from schema only
 ⚠️  Verify every column name against the schema!"""
 
-    def create_sql_generation_prompt(self, user_query: str, schema_context: str = None, connection_type: str = "unknown", tables_data: list = None) -> str:
-        """Create an enhanced prompt for SQL query generation with structured JSON output."""
+    def _get_database_syntax_guidance(self, connection_type: str) -> str:
+        """Get database-specific SQL syntax guidance."""
+        connection_type_lower = connection_type.lower() if connection_type else ""
         
-        # Use structured data if available, otherwise fall back to text parsing
-        if tables_data:
-            column_reference = self._extract_column_reference_from_structured_data(tables_data)
-            # Create a simple schema context from structured data
-            schema_context = self._build_schema_context_from_structured_data(tables_data)
+        print(f"[LLMClient._get_database_syntax_guidance] 🔍 CONNECTION TYPE DEBUG:")
+        print(f"[LLMClient._get_database_syntax_guidance] Input connection_type: '{connection_type}'")
+        print(f"[LLMClient._get_database_syntax_guidance] Lowercase: '{connection_type_lower}'")
+        
+        if "mssql" in connection_type_lower or "sql server" in connection_type_lower or "sqlserver" in connection_type_lower:
+            guidance = """
+DATABASE-SPECIFIC SYNTAX REQUIREMENTS:
+⚠️ SQL SERVER: Use TOP instead of LIMIT
+- Correct: SELECT TOP 10 * FROM table_name
+- Incorrect: SELECT * FROM table_name LIMIT 10
+- Use square brackets for reserved words: [order], [user], etc.
+- Use GETDATE() for current timestamp
+- String concatenation: + operator or CONCAT() function
+"""
+            print(f"[LLMClient._get_database_syntax_guidance] ✅ DETECTED SQL SERVER - returning TOP guidance")
+            return guidance
+            
+        elif "postgres" in connection_type_lower or "postgresql" in connection_type_lower:
+            guidance = """
+DATABASE-SPECIFIC SYNTAX REQUIREMENTS:
+✅ POSTGRESQL: Use LIMIT for row limiting
+- Correct: SELECT * FROM table_name LIMIT 10
+- Use double quotes for case-sensitive identifiers
+- Use NOW() for current timestamp
+- String concatenation: || operator or CONCAT() function
+"""
+            print(f"[LLMClient._get_database_syntax_guidance] ✅ DETECTED POSTGRESQL - returning LIMIT guidance")
+            return guidance
+            
+        elif "mysql" in connection_type_lower:
+            guidance = """
+DATABASE-SPECIFIC SYNTAX REQUIREMENTS:
+✅ MYSQL: Use LIMIT for row limiting
+- Correct: SELECT * FROM table_name LIMIT 10
+- Use backticks for reserved words: `order`, `user`, etc.
+- Use NOW() for current timestamp
+- String concatenation: CONCAT() function
+"""
+            print(f"[LLMClient._get_database_syntax_guidance] ✅ DETECTED MYSQL - returning LIMIT guidance")
+            return guidance
         else:
-            column_reference = self._extract_column_reference(schema_context or "")
-        
-        return f"""You are an expert SQL developer. Analyze the user request and generate a SQL query with your reasoning.
+            guidance = """
+DATABASE-SPECIFIC SYNTAX REQUIREMENTS:
+⚠️ UNKNOWN DATABASE TYPE: Use standard SQL practices
+- For row limiting, check if database supports LIMIT or TOP
+- Be careful with reserved words and use appropriate quoting
+"""
+            print(f"[LLMClient._get_database_syntax_guidance] ⚠️ UNKNOWN DATABASE TYPE - returning generic guidance")
+            return guidance
 
-⚠️ CRITICAL: You MUST use ONLY the exact column names from the schema below. DO NOT assume or invent any column names.
+    def create_sql_generation_prompt(self, user_query: str, schema_context: str = None, connection_type: str = "unknown", tables_data: list = None, agent_name: str = None) -> str:
+        """Create a simple prompt for SQL query generation with structured JSON output."""
+        
+        # Use structured data if available, otherwise use provided schema context
+        if tables_data:
+            schema_context = self._build_schema_context_from_structured_data(tables_data)
+        
+        # Get database-specific syntax guidance
+        syntax_guidance = self._get_database_syntax_guidance(connection_type)
+        
+        return f"""You are an expert SQL developer. Generate a SQL query to answer the user's request.
 
 USER REQUEST: {user_query}
 
 DATABASE TYPE: {connection_type}
 
-EXACT SCHEMA DEFINITION:
+{syntax_guidance}
+
+SCHEMA DEFINITION:
 {schema_context}
 
-STRICT COLUMN NAME REFERENCE:
-{column_reference}
-
-MANDATORY VALIDATION PROCESS:
-1. Identify which tables you need for the query
-2. For each table, find the exact column names in the schema above  
-3. Verify that every column in your SQL query exists in the schema
-4. Do NOT use assumed column names like "product_name", "customer_name", etc.
-5. Use ONLY the exact column names shown in the schema
+STRICT RULES:
+- Use ONLY tables and columns that exist in the schema above
+- Do NOT invent or assume any table or column names
+- Use exact table and column names as shown in the schema
+- Use schema-qualified table names (e.g., schema.table_name)
 
 REQUIRED JSON FORMAT:
 {{
-    "thought": "Step 1: Tables needed: [list]. Step 2: Exact columns from schema: [list each column with table.column format]. Step 3: Verified all columns exist in schema.",
-    "query": "The exact SQL query using ONLY the column names from the schema above"
+    "thought": "Brief analysis of the request and which tables/columns from the schema I'll use",
+    "query": "The SQL query using only schema tables and columns"
 }}
 
-VALIDATION CHECKLIST:
-- ✅ All column names are from the schema above
-- ✅ No assumed or invented column names used
-- ✅ Table names match the schema exactly
-- ✅ Column names match the schema exactly
-
-Respond with ONLY your JSON - validate every column against the schema:"""
+Respond with ONLY the JSON:"""
 
     def _build_schema_context_from_structured_data(self, tables_data: list) -> str:
         """Build a clean schema context from structured table data."""
@@ -489,7 +612,7 @@ REQUIRED JSON FORMAT:
 {examples}
 
 Remember: Respond with ONLY the JSON object, nothing else."""
-        
+        print(f"[LLMClient] Created structured JSON prompt:\n{prompt}")
         return prompt
 
 # Global LLM client instance
