@@ -11,7 +11,7 @@ class EndpointInvoker:
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
     
-    def invoke_endpoint(
+    def invoke_registry_endpoint(
         self, 
         app_key: str,
         agent_info: Dict[str, Any],

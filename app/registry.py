@@ -99,6 +99,8 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
                 agents[app_key]["tools"].append(tool)
                 # Also add to endpoints field for enhanced orchestrator
                 agents[app_key]["endpoints"].append(endpoint)
+                # Also add to endpoints field for enhanced orchestrator
+                agents[app_key]["endpoints"].append(endpoint)
         
         # Fetch data agents
         print(f"[Registry] Fetching data agents from: {data_agents_url}")
@@ -230,6 +232,8 @@ def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any
     # Get basic agent info from registry
     agents = fetch_agents_and_tools_from_registry()
     agent = agents.get(agent_key)
+    # print(f"[Registry] Found agent: {agent_key} - {agent.get('tables', 'Unknown')}")
+    
     
     if not agent:
         print(f"[Registry] Agent not found: {agent_key}")
@@ -272,7 +276,7 @@ def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any
                     columns = table.get("columns", [])
                     if columns:
                         table_info += f"\n-- Key Columns:"
-                        for col in columns[:8]:  # Limit to first 8 columns to avoid token overflow
+                        for col in columns:  # Limit to first 8 columns to avoid token overflow
                             col_name = col.get("columnName", "")
                             data_type = col.get("dataType", "")
                             nullable = "NULL" if col.get("isNullable", True) else "NOT NULL"
@@ -292,7 +296,7 @@ def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any
                         "row_count": row_count,
                         "column_count": len(columns)
                     })
-            
+            print(f"[Registry] table summaries for LLM schema: {table_summaries}")
             # Extract sample queries from relations
             for relation in relations:
                 example = relation.get("example", "")
@@ -316,6 +320,7 @@ def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any
                 "name": cached_details.get("name", enhanced_details.get("name", "")),
                 "description": cached_details.get("description", enhanced_details.get("description", "")),
                 "database_type": cached_details.get("connectionType", enhanced_details.get("database_type", "")),
+                "connection_type": cached_details.get("connectionType", enhanced_details.get("database_type", "")),  # Ensure connection_type is available
                 
                 # Security information from environment (correct location)
                 "vault_key": vault_key,
@@ -323,7 +328,8 @@ def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any
                 
                 # Rich schema information for LLM
                 "schema": "\n".join(schema_info_parts),
-                "tables": table_summaries,
+                "tables": table_summaries,  # Summarized tables for display
+                "tables_with_columns": tables,  # Full table data with columns for LLM
                 "table_relations": relations,
                 "sample_queries": sample_queries,
                 
@@ -367,10 +373,20 @@ def sync_registry():
     """Manually sync the registry cache and preload vault cache."""
     global _data_agent_details_cache
     
-    # Clear the data agent details cache before refresh
-    _data_agent_details_cache["cache"].clear()
+    # Store current cache keys for comparison (don't clear yet)
+    old_cache_keys = set(_data_agent_details_cache["cache"].keys())
+    print(f"[Registry] Manual sync starting - current cache has {len(old_cache_keys)} entries")
     
     agents = fetch_agents_and_tools_from_registry(force_refresh=True)
+    
+    # Now that new data is loaded, remove any stale entries
+    new_cache_keys = set(_data_agent_details_cache["cache"].keys())
+    stale_keys = old_cache_keys - new_cache_keys
+    if stale_keys:
+        print(f"[Registry] Removing {len(stale_keys)} stale cache entries: {list(stale_keys)[:3]}...")
+        for key in stale_keys:
+            _data_agent_details_cache["cache"].pop(key, None)
+    
     print(f"[Registry] Manual sync completed: {len(agents)} agents loaded")
     print(f"[Registry] Data agent details cache updated with {len(_data_agent_details_cache['cache'])} entries")
     
@@ -473,10 +489,19 @@ def _auto_reload_registry():
     """Background thread to auto-refresh the registry cache every ttl seconds."""
     while True:
         try:
-            # Clear the data agent details cache before refresh
-            _data_agent_details_cache["cache"].clear()
+            # Store current cache keys for comparison (don't clear yet)
+            old_cache_keys = set(_data_agent_details_cache["cache"].keys())
             
             agents = fetch_agents_and_tools_from_registry(force_refresh=True)
+            
+            # Now that new data is loaded, remove any stale entries
+            new_cache_keys = set(_data_agent_details_cache["cache"].keys())
+            stale_keys = old_cache_keys - new_cache_keys
+            if stale_keys:
+                print(f"[Registry] Auto-reload removing {len(stale_keys)} stale cache entries")
+                for key in stale_keys:
+                    _data_agent_details_cache["cache"].pop(key, None)
+            
             print(f"[Registry] Auto-reload completed: {len(agents)} agents loaded")
             print(f"[Registry] Data agent details cache updated with {len(_data_agent_details_cache['cache'])} entries")
             

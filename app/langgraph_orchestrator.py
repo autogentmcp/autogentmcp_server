@@ -494,7 +494,7 @@ class WorkflowOrchestrator:
             
             # Format tables list
             tables_info = []
-            for t in agent_details.get('tables', [])[:10]:  # Limit to 10 tables
+            for t in agent_details.get('tables', []):  # Pass ALL tables for accurate representation
                 table_name = t.get('name', 'unknown')
                 row_count = t.get('row_count', 0)
                 table_desc = t.get('description', 'No description')[:80] + "..." if len(t.get('description', '')) > 80 else t.get('description', 'No description')
@@ -632,21 +632,20 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
                     raise Exception("LLM returned empty response")
                     
             except Exception as llm_error:
-                # Fallback if LLM fails
-                self._emit_streaming_event(state, "llm_fallback", 
-                                         f"⚠️ LLM generation failed: {str(llm_error)}, using fallback")
+                # Handle LLM failure properly - don't generate unsafe fallback queries
+                error_msg = f"LLM SQL generation failed: {str(llm_error)}"
+                self._emit_streaming_event(state, "llm_generation_failed", 
+                                         f"❌ {error_msg}")
                 
-                # Create a basic fallback response
-                sql_response = {
-                    "sql_query": f"-- Query for: {state['user_query']}\nSELECT * FROM {tables_info[0].split(' ')[1] if tables_info else 'table'} LIMIT 10;",
-                    "query_explanation": f"Basic query to explore data for: {state['user_query']}",
-                    "reasoning": "Fallback query due to LLM timeout or error",
-                    "confidence": 0.3,
-                    "assumptions": ["Using fallback due to LLM error"],
-                    "limitations": ["This is a basic fallback query"],
-                    "schema_used": ["unknown"],
-                    "estimated_complexity": "low"
+                # Store the error and let the workflow handle it appropriately
+                state["execution_error"] = error_msg
+                state["current_results"] = {
+                    "error": error_msg,
+                    "action": "form_query",
+                    "agent_id": state["current_agent"],
+                    "agent_name": state["current_agent_name"]
                 }
+                return  # Exit early without attempting unsafe query generation
             
             # Extract the SQL query and metadata
             sql_query = sql_response.get("sql_query", "").strip()
@@ -752,6 +751,13 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
             
             vault_key = agent_details.get("vault_key")
             connection_type = agent_details.get("database_type") or agent_details.get("connectionType", "postgresql")
+            
+            # Debug: Log agent details to understand connection type detection
+            print(f"[DEBUG] Agent Details Keys: {list(agent_details.keys())}")
+            print(f"[DEBUG] Agent Name: {agent_details.get('name', 'Unknown')}")
+            print(f"[DEBUG] Database Type Field: {agent_details.get('database_type')}")
+            print(f"[DEBUG] Connection Type Field: {agent_details.get('connectionType')}")
+            print(f"[DEBUG] Final Connection Type: {connection_type}")
             
             if not vault_key:
                 raise Exception(f"No vault key found for agent {state['current_agent']}")
@@ -930,18 +936,62 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
                 self._emit_streaming_event(state, "ready_to_finalize", "✅ Database query results available - ready to generate final response")
                 return state
             
-            # PRIORITY 3: If we haven't completed all planned steps, continue with the plan
+            # PRIORITY 3: Handle LLM generation failures intelligently
             if not at_end_of_plan:
                 # Check if there's an execution error that prevents continuation
                 if state.get("execution_error"):
+                    error_msg = str(state["execution_error"])
                     self._emit_streaming_event(state, "execution_error_detected", 
-                                             f"⚠️ Execution error detected: {state['execution_error']}")
-                    # Even with errors, try to continue unless it's a critical failure
-                    if "not found" in str(state["execution_error"]).lower():
+                                             f"⚠️ Execution error detected: {error_msg}")
+                    
+                    # Handle LLM generation failures specifically
+                    if "LLM SQL generation failed" in error_msg:
+                        self._emit_streaming_event(state, "llm_generation_failure", 
+                                                 "❌ LLM failed to generate SQL query - cannot proceed with this agent")
+                        
+                        # Check if there are alternative agents we could try
+                        available_agents = state.get("available_agents", [])
+                        current_agent = state.get("current_agent")
+                        
+                        # Filter out the failed agent and find alternatives
+                        alternative_agents = [a for a in available_agents if a["id"] != current_agent]
+                        
+                        if alternative_agents and len(alternative_agents) > 0:
+                            # Try alternative agent
+                            alt_agent = alternative_agents[0]  # Pick first alternative
+                            self._emit_streaming_event(state, "trying_alternative_agent", 
+                                                     f"🔄 Trying alternative agent: {alt_agent['name']} (ID: {alt_agent['id']})")
+                            
+                            # Update current agent and clear error to retry
+                            state["current_agent"] = alt_agent["id"]
+                            state["current_agent_name"] = alt_agent["name"]
+                            state["execution_error"] = None  # Clear error to allow retry
+                            
+                            # Go back one step to retry with new agent
+                            if state["current_step"] > 0:
+                                state["current_step"] -= 1
+                            
+                            state["workflow_status"] = "executing"
+                            return state
+                        else:
+                            # No alternative agents available - finalize with error explanation
+                            self._emit_streaming_event(state, "no_alternatives_available", 
+                                                     "❌ No alternative agents available - will provide error explanation")
+                            state["workflow_status"] = "ready_to_finalize"
+                            return state
+                    
+                    # Handle other types of errors
+                    elif "not found" in error_msg.lower() or "agent" in error_msg.lower():
+                        self._emit_streaming_event(state, "critical_agent_error", 
+                                                 "❌ Critical agent error - cannot continue workflow")
                         state["workflow_status"] = "error"
                         return state
+                    else:
+                        # For other errors, try to continue if possible
+                        self._emit_streaming_event(state, "non_critical_error", 
+                                                 "⚠️ Non-critical error detected - attempting to continue workflow")
                 
-                # Continue with next planned step
+                # Continue with next planned step if no blocking errors
                 if current_step < len(execution_plan):
                     next_step = execution_plan[current_step]
                     self._emit_streaming_event(state, "continuing_plan", 
@@ -1119,25 +1169,55 @@ I was able to retrieve some data for your query "{state.get('user_query', 'data 
 
 Would you like me to help interpret the available data or retry the analysis?"""
             else:
-                # Provide a more user-friendly error message when no data was retrieved
-                state["final_answer"] = f"""**Conclusion:**
-Unfortunately, the requested {state.get('user_query', 'data analysis')} could not be generated due to a failure in data retrieval. 
+                # Check for specific LLM generation failures
+                execution_error = state.get("execution_error", "")
+                if "LLM SQL generation failed" in execution_error:
+                    # Provide specific error message for LLM failures
+                    state["final_answer"] = f"""**Query Processing Failed:**
 
-**Possible Issues:**
-- SQL query execution failed
+I encountered an issue while trying to generate a SQL query for your request: "{state.get('user_query', 'data analysis')}"
+
+**What Happened:**
+The AI language model that generates SQL queries was unable to process your request. This could be due to:
+
+- Complex query requirements that exceed current capabilities
+- Ambiguous or unclear data requirements
+- Technical issues with the AI model
+- Database schema complexity
+
+**What You Can Try:**
+1. **Simplify your request:** Try breaking down complex questions into smaller, more specific queries
+2. **Be more specific:** Include details about which tables, time periods, or data fields you're interested in
+3. **Use examples:** Provide sample queries or expected output formats
+4. **Try alternative phrasing:** Rephrase your question using different terminology
+
+**Example of a clear request:**
+Instead of: "Show me business performance"
+Try: "Show me total sales by month for the last 6 months"
+
+Would you like to try rephrasing your question or need help understanding what data is available?"""
+                else:
+                    # Provide a more user-friendly error message when no data was retrieved
+                    state["final_answer"] = f"""**Analysis Incomplete:**
+
+I was unable to complete the analysis for your query: "{state.get('user_query', 'data analysis')}"
+
+**Issue Encountered:**
+{execution_error}
+
+**Possible Causes:**
 - Database connection problems  
 - Agent configuration issues
 - Data source unavailable
-
-**Technical Details:** {str(e)}
+- Query execution timeout
 
 **Next Steps:**
-1. Check database connectivity
+1. Check database connectivity and permissions
 2. Verify data agent configuration
-3. Review query syntax and permissions
+3. Try a simpler query to test connectivity
 4. Contact support if the issue persists
 
-Let me know if you need further assistance!"""
+Let me know if you'd like me to help troubleshoot or try a different approach!"""
             
             self._emit_streaming_event(state, "error", f"❌ Finalization failed: {str(e)}")
             

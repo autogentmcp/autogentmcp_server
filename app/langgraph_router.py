@@ -53,7 +53,7 @@ def _fallback_application_route(query: dict, session_id: str = "default") -> Dic
         resolved_endpoint = base_domain + endpoint_path
     
     # Invoke endpoint
-    call_result = endpoint_invoker.invoke_endpoint(
+    call_result = endpoint_invoker.invoke_registry_endpoint(
         app_key=app_key,
         agent_info=agent_info,
         tool_info=tool_info,

@@ -1179,8 +1179,80 @@ Return JSON with the evaluation result:
             }
     
     def _generate_final_answer(self, workflow: Workflow) -> str:
-        """Generate final answer from workflow results."""
+        """Generate final answer from workflow results using proper data formatting."""
         try:
+            # Check if we have data agent results that need proper formatting
+            if workflow.results and any('data' in result for result in workflow.results):
+                # Use the data-specific formatting approach
+                return self._format_data_agent_results(workflow)
+            else:
+                # Use generic business analysis approach for non-data queries
+                final_prompt = f"""
+Generate a comprehensive final answer based on the completed workflow:
+
+ORIGINAL USER QUERY: {workflow.user_query}
+WORKFLOW DESCRIPTION: {workflow.description}
+
+WORKFLOW RESULTS:
+{json.dumps(workflow.results, indent=2, default=str)}
+
+Provide a clear, comprehensive answer that addresses the original query using all the gathered information.
+Format the response to be user-friendly and actionable.
+"""
+                
+                return llm_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
+            
+        except Exception as e:
+            print(f"[AgentOrchestrator] Error generating final answer: {e}")
+            return f"Workflow completed successfully, but there was an error generating the final summary. Results: {workflow.results}"
+    
+    def _format_data_agent_results(self, workflow: Workflow) -> str:
+        """Format data agent results using the proper data formatting approach."""
+        try:
+            # Extract the main data result (use the first data result for primary formatting)
+            primary_result = None
+            all_results_text = ""
+            
+            for result in workflow.results:
+                if 'data' in result and result.get('data', {}).get('results'):
+                    if primary_result is None:
+                        primary_result = result
+                    
+                    # Build formatted text for all results
+                    agent_name = result.get('agent_name', 'Unknown Agent')
+                    data = result.get('data', {})
+                    query = result.get('query', 'Unknown Query')
+                    
+                    all_results_text += f"=== {agent_name} ===\n"
+                    all_results_text += f"Records Retrieved: {len(data.get('results', []))}\n"
+                    all_results_text += f"Data: {data}\n"
+                    all_results_text += f"Query Executed: {query}\n"
+            
+            if primary_result:
+                # Use the LLM client's data formatting approach
+                query = workflow.user_query
+                sql_query = primary_result.get('query', 'Data query executed')
+                query_result = {'results': [], 'sampling_info': {'strategy_used': 'aggregation', 'row_count': 0}}
+                
+                # Combine all data results
+                for result in workflow.results:
+                    if 'data' in result and result.get('data', {}).get('results'):
+                        query_result['results'].extend(result['data']['results'])
+                        if 'sampling_info' in result['data']:
+                            query_result['sampling_info'] = result['data']['sampling_info']
+                
+                query_result['sampling_info']['row_count'] = len(query_result['results'])
+                
+                # Use the LLM client's create_data_answer_prompt method
+                data_prompt = llm_client.create_data_answer_prompt(query, sql_query, query_result)
+                return llm_client.invoke_with_text_response(data_prompt, allow_diagrams=True)
+            else:
+                # Fallback if no proper data results found
+                return f"No specific data results found in the workflow. Results: {workflow.results}"
+                
+        except Exception as e:
+            print(f"[AgentOrchestrator] Error formatting data agent results: {e}")
+            # Fallback to generic approach
             final_prompt = f"""
 Generate a comprehensive final answer based on the completed workflow:
 
@@ -1193,12 +1265,7 @@ WORKFLOW RESULTS:
 Provide a clear, comprehensive answer that addresses the original query using all the gathered information.
 Format the response to be user-friendly and actionable.
 """
-            
             return llm_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
-            
-        except Exception as e:
-            print(f"[AgentOrchestrator] Error generating final answer: {e}")
-            return f"Workflow completed successfully, but there was an error generating the final summary. Results: {workflow.results}"
     
     def _calculate_progress(self, workflow: Workflow) -> float:
         """Calculate workflow progress percentage."""

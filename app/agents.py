@@ -1,4 +1,4 @@
-from app.registry import get_agents
+from app.registry import fetch_agents_and_tools_from_registry
 from dataclasses import dataclass, field
 from typing import Dict, Any, List
 
@@ -29,9 +29,9 @@ class Tool:
 
 def build_tools_from_registry() -> List[Tool]:
     """Dynamically build Tool objects from registry metadata."""
-    agents = get_agents()
+    agents = fetch_agents_and_tools_from_registry()
     tools = []
-    for agent in agents:
+    for agent_id, agent in agents.items():
         tools.append(Tool(
             app_key=agent.get("app_key"),
             endpoint_uri=agent.get("endpoint_uri"),

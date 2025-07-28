@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 import uuid
 import json
 import asyncio
+
 from dotenv import load_dotenv
 
 from app.langgraph_router import route_query
@@ -482,31 +483,45 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
                 'timestamp': time.time()
             }, default=str)}\n\n"
             
-            # Enhanced step mapping - messages already include icons!
+            # Simple Orchestrator step mapping - 5-step workflow
             step_mapping = {
-                "workflow_started": {"name": "Workflow Started", "status": "loading", "message": "🚀 Enhanced multi-step analysis started", "next": "Agent Recommendation"},
-                "agent_recommendation": {"name": "Agent Recommendation", "status": "loading", "message": "🤖 Analyzing requirements and selecting agent", "next": "Agent Selection"},  
+                # Core workflow events
+                "workflow_started": {"name": "Workflow Started", "status": "loading", "message": "🚀 Simple Orchestrator workflow started", "next": "Understanding Request"},
+                "workflow_completed": {"name": "Analysis Complete", "status": "complete", "message": "✅ Analysis completed successfully", "next": "Finished"},
+                "error": {"name": "Error", "status": "error", "message": "❌ Error occurred", "next": "Review"},
+                
+                # Simple Orchestrator specific steps
+                "step_started": {"name": "Processing", "status": "loading", "message": "▶️ Starting step", "next": "In Progress"},
+                "step_completed": {"name": "Step Complete", "status": "complete", "message": "✅ Step completed", "next": "Next Step"},
+                
+                # Step-specific mappings by step ID
+                "analyze": {"name": "Understanding Request", "status": "loading", "message": "🧠 Understanding your request", "next": "Planning Execution"},
+                "execute": {"name": "Executing Plan", "status": "loading", "message": "⚡ Executing agent plan", "next": "Generating Response"},
+                "respond": {"name": "Generating Response", "status": "loading", "message": "📝 Generating final response", "next": "Complete"},
+                
+                # Legacy Enhanced Orchestrator events (for backward compatibility)
+                "agent_recommendation": {"name": "Agent Recommendation", "status": "loading", "message": "� Analyzing requirements and selecting agent", "next": "Agent Selection"},  
                 "agent_selection": {"name": "Agent Selection", "status": "loading", "message": "🎯 Selecting optimal agent", "next": "Request Preparation"},
                 "request_preparation": {"name": "Request Preparation", "status": "loading", "message": "📝 Preparing specific request", "next": "Agent Execution"},
                 "agent_execution": {"name": "Agent Execution", "status": "loading", "message": "⚡ Executing agent query", "next": "Result Evaluation"},
                 "evaluation": {"name": "Result Evaluation", "status": "loading", "message": "🤔 Evaluating results and planning next step", "next": "Next Step Decision"},
-                "step_started": {"name": "Processing", "status": "loading", "message": "▶️ Starting step", "next": "In Progress"},
-                "step_completed": {"name": "Step Complete", "status": "complete", "message": "✅ Step completed", "next": "Next Step"},
-                "workflow_completed": {"name": "Analysis Complete", "status": "complete", "message": "✅ Analysis completed successfully", "next": "Finished"},
-                "error": {"name": "Error", "status": "error", "message": "❌ Error occurred", "next": "Review"},
                 "llm_routing_decision": {"name": "Agent Selected", "status": "complete", "message": None, "next": "Next Action"},
                 "sql_generated": {"name": "Query Generated", "status": "complete", "message": "📝 SQL query generated", "next": "Execution"},
                 "data_query": {"name": "Data Retrieved", "status": "complete", "message": "📊 Data successfully retrieved", "next": "Analysis"},
                 "user_input_required": {"name": "User Input", "status": "waiting", "message": "❓ Additional input required", "next": "Waiting"}
             }
             
-            # Start enhanced workflow AFTER we start streaming events
+            # Start simple workflow AFTER we start streaming events
             workflow_task = asyncio.create_task(
-                enhanced_orchestrator.execute_workflow(
+                simple_orchestrator.execute_workflow(
                     user_query=request.query,
                     session_id=request.session_id
                 )
             )
+            
+            # Track if user input was required
+            user_input_required = False
+            workflow_result = None
             
             # Stream enhanced workflow events - this now runs concurrently with the workflow
             events_processed = 0
@@ -533,23 +548,42 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
                             yield event_sse  # Forward heartbeat
                             continue
                         
-                        # Map enhanced workflow events to UI steps
-                        if event_type in step_mapping:
+                        # Map workflow events to UI steps
+                        step_info = None
+                        final_message = event_data.get('message', '')
+                        
+                        # Handle step-specific events
+                        if event_type == "step_started" or event_type == "step_completed":
+                            step_id = event_data.get("step_id", "unknown")
+                            if step_id in step_mapping:
+                                step_info = step_mapping[step_id]
+                                # Use the actual message from the event
+                                final_message = event_data.get('description', '') or step_info.get("message", "Processing...")
+                        elif event_type in step_mapping:
                             step_info = step_mapping[event_type]
-                            event_data_dict = event_data.get("data", {})
-                            
-                            # Prioritize dynamic message from event data over static step_mapping message
-                            # Check both message and description fields from event data
-                            dynamic_message = event_data_dict.get("message") or event_data_dict.get("description")
-                            static_message = step_info.get("message")
-                            final_message = dynamic_message or static_message or "Processing..."
-                            
+                            final_message = event_data.get('message', '') or step_info.get("message", "Processing...")
+                        
+                        # Special handling for workflow_completed - forward with final_answer
+                        if event_type == "workflow_completed":
+                            final_answer = event_data.get('data', {}).get('final_answer', '')
+                            execution_time = event_data.get('data', {}).get('execution_time_seconds', 0)
+                            yield f"data: {json.dumps({
+                                'type': 'workflow_completed',
+                                'final_answer': final_answer,
+                                'execution_time': execution_time,
+                                'message': final_message or '✅ Analysis completed successfully',
+                                'timestamp': time.time()
+                            }, default=str)}\n\n"
+                            break  # End streaming on workflow completion
+                        
+                        if step_info:
                             current_step = {
                                 "name": step_info["name"],
-                                "status": step_info.get("status", "loading"),
+                                "status": "complete" if event_type == "step_completed" else step_info.get("status", "loading"),
                                 "message": final_message,
                                 "event_type": event_type,
-                                "raw_data": event_data_dict
+                                "step_id": event_data.get("step_id", ""),
+                                "raw_data": event_data
                             }
                             
                             next_step = {
@@ -568,6 +602,12 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
                                 },
                                 'timestamp': time.time()
                             }, default=str)}\n\n"
+                            
+                            # CRITICAL: If user input is required, mark flag and wait for workflow completion to check status
+                            if event_type == "user_input_required":
+                                print(f"[DEBUG] User input required detected in streaming endpoint")
+                                user_input_required = True
+                                # Don't break here - let the workflow complete and check its return status
                         else:
                             # Forward unmapped events with enhanced context
                             yield f"data: {json.dumps({
@@ -578,26 +618,40 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
                                 'timestamp': time.time()
                             }, default=str)}\n\n"
                             
-                        if event_type == "workflow_completed":
-                            break
-                            
                     except json.JSONDecodeError:
                         continue
             
-            # Get final result
+            # Get workflow result and check if user input is required
             if workflow_task.done() and not workflow_task.exception():
-                final_result = await workflow_task
-                safe_result = convert_decimals_to_float(final_result)
+                workflow_result = await workflow_task
+                safe_result = convert_decimals_to_float(workflow_result)
                 
-                yield f"data: {json.dumps({
-                    'type': 'enhanced_completed',
-                    'final_answer': safe_result.get('final_answer'),
-                    'execution_summary': safe_result.get('execution_summary'),
-                    'agents_used': safe_result.get('agents_used', []),
-                    'total_data_points': safe_result.get('total_data_points', 0),
-                    'workflow_type': 'enhanced_multi_step',
-                    'timestamp': time.time()
-                }, default=str)}\n\n"
+                # Check if workflow returned waiting_input status
+                if safe_result.get('status') == 'waiting_input':
+                    print(f"[DEBUG] Workflow requires user input - sending user input required event")
+                    yield f"data: {json.dumps({
+                        'type': 'enhanced_user_input_required',
+                        'input_request': safe_result.get('pending_input', {}),
+                        'workflow_id': safe_result.get('workflow_id'),
+                        'session_id': request.session_id,
+                        'message': 'Workflow paused - user input required',
+                        'timestamp': time.time()
+                    }, default=str)}\n\n"
+                else:
+                    # Workflow completed normally
+                    yield f"data: {json.dumps({
+                        'type': 'enhanced_completed',
+                        'final_answer': safe_result.get('final_answer'),
+                        'execution_summary': safe_result.get('execution_summary'),
+                        'agents_used': safe_result.get('agents_used', []),
+                        'total_data_points': safe_result.get('total_data_points', 0),
+                        'workflow_type': 'enhanced_multi_step',
+                        'timestamp': time.time()
+                    }, default=str)}\n\n"
+            elif workflow_task.cancelled():
+                print(f"[DEBUG] Workflow was cancelled")
+            elif workflow_task.exception():
+                print(f"[DEBUG] Workflow failed with exception: {workflow_task.exception()}")
             
             yield f"data: {json.dumps({'type': 'enhanced_stream_end', 'timestamp': time.time()}, default=str)}\n\n"
                 
@@ -979,6 +1033,481 @@ def get_database_drivers():
         }
     except Exception as e:
         return {"status": "error", "message": f"Error checking drivers: {str(e)}"}
+
+# Enhanced LLM Orchestrator Endpoints
+from app.enhanced_llm_orchestrator import EnhancedLLMOrchestrator
+from app.orchestrator import simple_orchestrator
+
+# Initialize the enhanced LLM orchestrator (singleton) - keeping for legacy features
+enhanced_llm_orchestrator = EnhancedLLMOrchestrator()
+
+class EnhancedQueryRequest(BaseModel):
+    query: str
+    session_id: str = None
+    include_analysis: bool = True
+    max_steps: int = 5
+    browser_fingerprint: dict = None  # Optional browser fingerprint for session generation
+
+class BrowserFingerprint(BaseModel):
+    user_agent: str = None
+    screen_resolution: str = None
+    timezone: str = None
+    language: str = None
+    platform: str = None
+    viewport_size: str = None
+    color_depth: int = None
+    device_memory: float = None
+    hardware_concurrency: int = None
+    connection_type: str = None
+    cookie_enabled: bool = None
+    do_not_track: str = None
+    canvas_fingerprint: str = None  # Hash of canvas rendering
+    webgl_fingerprint: str = None   # WebGL renderer info
+
+class SessionRequest(BaseModel):
+    browser_fingerprint: BrowserFingerprint = None
+
+class NewConversationRequest(BaseModel):
+    current_session_id: str
+
+class FeedbackRequest(BaseModel):
+    workflow_id: str
+    feedback: str  # "thumbs_up", "thumbs_down", "positive", "negative"
+    comments: str = None
+
+@app.post("/enhanced/session/create")
+def create_session_with_fingerprint(request: SessionRequest):
+    """
+    Create a new session using browser fingerprint.
+    This endpoint is designed to work with Streamlit's client-side JavaScript.
+    """
+    try:
+        fingerprint_data = request.browser_fingerprint.dict() if request.browser_fingerprint else {}
+        
+        # Generate session using fingerprint
+        user_id, session_id = enhanced_llm_orchestrator.session_manager.generate_session_from_fingerprint(
+            fingerprint_data
+        )
+        
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "session_id": session_id,
+            "conversation_id": session_id,  # For compatibility
+            "fingerprint_quality": enhanced_llm_orchestrator.session_manager._calculate_fingerprint_quality(fingerprint_data),
+            "message": "Session created successfully"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to create session"
+        }
+
+@app.post("/enhanced/session/{session_id}/new_conversation")
+def create_new_conversation(session_id: str):
+    """
+    Create a new conversation within an existing session.
+    This is like starting a new chat thread.
+    """
+    try:
+        new_conversation_id = enhanced_llm_orchestrator.session_manager.create_new_conversation(session_id)
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "new_conversation_id": new_conversation_id,
+            "conversation_title": "New Chat",  # Placeholder title, will be updated with first query
+            "message": "New conversation created"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to create new conversation"
+        }
+
+@app.get("/enhanced/session/{session_id}/conversations")
+def get_user_conversations(session_id: str):
+    """
+    Get all conversations for a user session.
+    """
+    try:
+        conversations = enhanced_llm_orchestrator.session_manager.get_user_conversations(session_id)
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "conversations": conversations,
+            "total_conversations": len(conversations)
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to get conversations"
+        }
+
+async def generate_conversation_title_from_query(query: str) -> str:
+    """
+    Generate a concise conversation title from the first query using LLM.
+    """
+    try:
+        # Use LLM to generate a concise title
+        title_prompt = f"""
+        Generate a concise, descriptive title (2-6 words) for a conversation that starts with this query:
+        "{query}"
+        
+        The title should be:
+        - Brief and clear
+        - Descriptive of the main topic
+        - Professional but friendly
+        - No quotes or special characters
+        
+        Examples:
+        Query: "Show me sales data for Q3" → Title: "Q3 Sales Analysis"
+        Query: "What products are out of stock?" → Title: "Inventory Stock Check" 
+        Query: "Generate a customer report" → Title: "Customer Report Generation"
+        Query: "yes please" → Title: "Follow-up Request"
+        
+        Return only the title, nothing else.
+        """
+        
+        title_response = enhanced_llm_orchestrator.llm_client.invoke(title_prompt, timeout=10)
+        title = title_response.content.strip().strip('"').strip("'")
+        
+        # Fallback if title is too long or empty
+        if len(title) > 50 or len(title) < 3:
+            # Generate simple title from query
+            words = query.split()[:4]  # First 4 words
+            title = " ".join(words).title()
+            if len(title) > 50:
+                title = title[:47] + "..."
+        
+        return title
+        
+    except Exception as e:
+        print(f"❌ LLM title generation failed: {e}")
+        # Simple fallback title
+        words = query.split()[:3]
+        title = " ".join(words).title() if words else "New Conversation"
+        return title
+
+@app.post("/enhanced/query")
+async def enhanced_query_endpoint(request: EnhancedQueryRequest):
+    """
+    Enhanced multi-hop query endpoint with LLM planning, result analysis, and feedback learning.
+    This endpoint provides:
+    - Advanced intent analysis and query refinement
+    - Dynamic agent selection based on capabilities
+    - Multi-step reasoning with follow-up actions
+    - LLM-powered result analysis and insights
+    - Learning from user feedback
+    - Session management with browser fingerprinting
+    """
+    try:
+        # Simple session handling - Simple Orchestrator manages sessions internally
+        session_id = request.session_id
+        if not session_id:
+            # Generate simple session ID if not provided
+            session_id = str(uuid.uuid4())
+            print(f"🆔 Generated session: {session_id}")
+        
+        result = await simple_orchestrator.execute_workflow(
+            user_query=request.query,
+            session_id=session_id
+        )
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "result": result,
+            "endpoint_info": {
+                "type": "simple_orchestration",
+                "features": [
+                    "intent_analysis",
+                    "single_llm_call", 
+                    "agent_execution",
+                    "conversation_memory"
+                ]
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Enhanced query execution failed"
+        }
+
+@app.post("/enhanced/feedback")
+async def record_feedback_endpoint(request: FeedbackRequest):
+    """
+    Record user feedback for completed workflows to improve future recommendations.
+    Supports thumbs up/down feedback and detailed comments.
+    """
+    try:
+        result = await enhanced_llm_orchestrator.record_feedback(
+            workflow_id=request.workflow_id,
+            feedback=request.feedback
+        )
+        
+        return {
+            "status": "success",
+            "feedback_recorded": result,
+            "workflow_id": request.workflow_id,
+            "feedback_type": request.feedback
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error", 
+            "error": str(e),
+            "message": "Failed to record feedback"
+        }
+
+@app.post("/enhanced/resume")
+async def enhanced_llm_orchestration_resume(request: dict):
+    """Resume enhanced LLM orchestration workflow with user choice."""
+    try:
+        workflow_id = request.get("workflow_id")
+        session_id = request.get("session_id")
+        user_choice = request.get("user_choice", {})
+        
+        if not workflow_id or not session_id:
+            return {"status": "error", "message": "Missing workflow_id or session_id"}
+        
+        result = await enhanced_llm_orchestrator.resume_enhanced_workflow_with_user_choice(
+            workflow_id=workflow_id,
+            session_id=session_id,
+            user_choice=user_choice
+        )
+        
+        return {"status": "success", "result": result}
+        
+    except Exception as e:
+        return {"status": "error", "message": f"Error resuming enhanced LLM orchestration: {str(e)}"}
+
+@app.get("/enhanced/feedback/analytics")
+def get_feedback_analytics():
+    """Get analytics on user feedback and system performance."""
+    try:
+        import sqlite3
+        
+        with sqlite3.connect(enhanced_llm_orchestrator.feedback_manager.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Get feedback distribution
+            cursor.execute("""
+                SELECT user_feedback, COUNT(*) as count
+                FROM interaction_logs
+                WHERE user_feedback IS NOT NULL
+                GROUP BY user_feedback
+            """)
+            feedback_dist = dict(cursor.fetchall())
+            
+            # Get most successful agents
+            cursor.execute("""
+                SELECT json_extract(agent_calls, '$[0].agent_id') as agent_id,
+                       COUNT(*) as usage_count,
+                       AVG(execution_time) as avg_time
+                FROM interaction_logs
+                WHERE user_feedback IN ('thumbs_up', 'positive')
+                GROUP BY agent_id
+                ORDER BY usage_count DESC
+                LIMIT 10
+            """)
+            top_agents = [
+                {"agent_id": row[0], "usage_count": row[1], "avg_time": row[2]}
+                for row in cursor.fetchall()
+            ]
+            
+            # Get query patterns
+            cursor.execute("""
+                SELECT COUNT(*) as total_interactions,
+                       COUNT(CASE WHEN user_feedback IN ('thumbs_up', 'positive') THEN 1 END) as positive_feedback,
+                       AVG(execution_time) as avg_execution_time
+                FROM interaction_logs
+            """)
+            stats = cursor.fetchone()
+            
+            return {
+                "status": "success",
+                "analytics": {
+                    "feedback_distribution": feedback_dist,
+                    "top_performing_agents": top_agents,
+                    "overall_stats": {
+                        "total_interactions": stats[0],
+                        "positive_feedback_count": stats[1],
+                        "satisfaction_rate": stats[1] / stats[0] if stats[0] > 0 else 0,
+                        "avg_execution_time": stats[2]
+                    }
+                }
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to get feedback analytics"
+        }
+
+@app.get("/enhanced/schema/{agent_id}")
+def get_agent_schema(agent_id: str, force_refresh: bool = False):
+    """Get schema information for a data agent from cached registry data (no DB connection needed)."""
+    try:
+        schema_summary = enhanced_llm_orchestrator.schema_introspector.get_schema_summary(
+            agent_id=agent_id,
+            force_refresh=force_refresh
+        )
+        
+        return {
+            "status": "success",
+            "agent_id": agent_id,
+            "schema_summary": schema_summary,
+            "source": "cached_registry_data",
+            "refreshed": force_refresh
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": f"Failed to get schema for agent {agent_id}"
+        }
+
+@app.get("/enhanced/patterns/similar")
+def get_similar_query_patterns(query: str, limit: int = 5):
+    """Find similar successful query patterns for reuse."""
+    try:
+        similar_patterns = enhanced_llm_orchestrator.feedback_manager.get_similar_queries(
+            query=query,
+            limit=limit
+        )
+        
+        return {
+            "status": "success",
+            "query": query,
+            "similar_patterns": similar_patterns,
+            "pattern_count": len(similar_patterns)
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to find similar patterns"
+        }
+
+@app.get("/enhanced/capabilities")
+def get_enhanced_capabilities():
+    """Get information about enhanced orchestrator capabilities."""
+    return {
+        "status": "success",
+        "capabilities": {
+            "multi_hop_reasoning": {
+                "description": "Execute complex workflows with multiple agent calls",
+                "features": ["intent_analysis", "dynamic_planning", "context_awareness"]
+            },
+            "feedback_learning": {
+                "description": "Learn from user feedback to improve recommendations",
+                "features": ["thumbs_up_down", "pattern_recognition", "agent_performance_tracking"]
+            },
+            "schema_introspection": {
+                "description": "Automatically discover and cache database schemas",
+                "supported_databases": ["mssql", "postgresql", "mysql", "bigquery"]
+            },
+            "result_analysis": {
+                "description": "LLM-powered analysis of query results with insights",
+                "features": ["trend_detection", "anomaly_identification", "follow_up_suggestions"]
+            },
+            "dialect_awareness": {
+                "description": "Generate database-specific SQL syntax",
+                "supported_dialects": ["mssql", "postgresql", "mysql", "bigquery", "spark"]
+            },
+            "sql_safety_validation": {
+                "description": "Comprehensive SQL safety checks to prevent data modification",
+                "features": [
+                    "dangerous_keyword_detection",
+                    "injection_pattern_detection", 
+                    "read_only_enforcement",
+                    "multi_statement_prevention",
+                    "schema_modification_blocking"
+                ],
+                "blocked_operations": [
+                    "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", 
+                    "TRUNCATE", "MERGE", "BULK", "EXEC", "EXECUTE"
+                ]
+            }
+        },
+        "endpoints": {
+            "/enhanced/query": "Main enhanced query endpoint with multi-hop reasoning",
+            "/enhanced/feedback": "Record user feedback for workflow improvement",
+            "/enhanced/feedback/analytics": "Get analytics on system performance and feedback",
+            "/enhanced/schema/{agent_id}": "Get dynamic schema information for data agents",
+            "/enhanced/patterns/similar": "Find similar successful query patterns",
+            "/enhanced/sql/validate": "Validate SQL query safety without execution"
+        }
+    }
+
+class SQLValidationRequest(BaseModel):
+    sql_query: str
+    database_type: str = "mssql"
+
+@app.post("/enhanced/sql/validate")
+def validate_sql_safety(request: SQLValidationRequest):
+    """
+    Validate SQL query safety without executing it.
+    This endpoint allows testing the SQL safety validation system.
+    """
+    try:
+        safety_check = enhanced_llm_orchestrator.sql_validator.validate_sql_safety(request.sql_query)
+        
+        return {
+            "status": "success",
+            "original_query": request.sql_query,
+            "database_type": request.database_type,
+            "validation_result": safety_check,
+            "recommendation": "Query is safe to execute" if safety_check["is_safe"] else "Query is NOT safe - contains dangerous operations"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to validate SQL query"
+        }
+
+# Streaming endpoint for enhanced workflows
+@app.get("/enhanced/stream/{workflow_id}")
+async def stream_enhanced_workflow(workflow_id: str):
+    """Stream real-time updates for an enhanced workflow execution."""
+    try:
+        from fastapi.responses import StreamingResponse
+        import json
+        
+        def generate_stream():
+            # This would connect to your workflow streaming system
+            # For now, return a simple demo stream
+            yield f"data: {json.dumps({'type': 'workflow_started', 'workflow_id': workflow_id})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Enhanced orchestration streaming available'})}\n\n"
+            yield f"data: {json.dumps({'type': 'workflow_completed', 'workflow_id': workflow_id})}\n\n"
+        
+        return StreamingResponse(
+            generate_stream(),
+            media_type="text/plain",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to start workflow stream"
+        }
 
 if __name__ == "__main__":
     import uvicorn
