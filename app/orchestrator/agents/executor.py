@@ -16,10 +16,10 @@ class AgentExecutor:
         self.data_agent_executor = DataAgentExecutor()
         self.application_agent_executor = ApplicationAgentExecutor()
     
-    async def execute_agent(self, agent_id: str, query: str) -> AgentResult:
+    async def execute_agent(self, agent_id: str, query: str, context: ExecutionContext = None) -> AgentResult:
         """Execute a single agent based on its type"""
         
-        print(f"[AgentExecutor] Executing agent {agent_id}")
+        print("[AgentExecutor] Executing agent {}".format(agent_id))
         
         try:
             agents = fetch_agents_and_tools_from_registry()
@@ -45,7 +45,7 @@ class AgentExecutor:
                     agent_id=agent_id,
                     agent_name=agent_name,
                     success=False,
-                    error=f"Unsupported agent type: {agent_type}"
+                    error="Unsupported agent type: {}".format(agent_type)
                 )
         
         except Exception as e:
@@ -53,12 +53,12 @@ class AgentExecutor:
                 agent_id=agent_id,
                 agent_name="Unknown",
                 success=False,
-                error=f"Agent execution error: {str(e)}"
+                error="Agent execution error: {}".format(str(e))
             )
     
     async def execute_single(self, context: ExecutionContext, step: Dict[str, Any]) -> List[AgentResult]:
         """Execute single agent"""
-        result = await self.execute_agent(step["agent_id"], step["query"])
+        result = await self.execute_agent(step["agent_id"], step["query"], context)
         return [result]
     
     async def execute_sequential(self, context: ExecutionContext, steps: List[Dict[str, Any]]) -> List[AgentResult]:
@@ -76,7 +76,7 @@ class AgentExecutor:
                         step["query"], prev_result
                     )
             
-            result = await self.execute_agent(step["agent_id"], step["query"])
+            result = await self.execute_agent(step["agent_id"], step["query"], context)
             results.append(result)
             agent_results[step["agent_id"]] = result
             
@@ -86,7 +86,7 @@ class AgentExecutor:
         """Execute agents in parallel"""
         tasks = []
         for step in steps:
-            task = self.execute_agent(step["agent_id"], step["query"])
+            task = self.execute_agent(step["agent_id"], step["query"], context)
             tasks.append(task)
         
         results = await asyncio.gather(*tasks, return_exceptions=True)

@@ -174,7 +174,14 @@ class ResponseHandler:
             },
             "results": execution_results,
             "agents_used": [{"agent_id": r.agent_id, "agent_name": r.agent_name} for r in successful_agents],
-            "total_data_points": sum(r.row_count for r in successful_agents if r.row_count)
+            "total_data_points": sum(r.row_count for r in successful_agents if r.row_count),
+            "visualization_ready": any(r.get("visualization", {}).get("output_format", []) != ["table"] for r in execution_results if r.get("success")),
+            "data_summary": {
+                "total_agents": len(results),
+                "successful_agents": len(successful_agents),
+                "total_records": sum(r.row_count for r in successful_agents if r.row_count),
+                "has_visualizations": any(r.get("visualization") for r in execution_results)
+            }
         }
     
     async def handle_general(self, context: ExecutionContext, intent: IntentAnalysisResult) -> Dict[str, Any]:
@@ -205,43 +212,56 @@ class ResponseHandler:
         
         final_responses = []
         
-        # Handle application agent results
+        # Handle application agent results (API calls)
         for result in application_results:
             agent_name = result.agent_name
             raw_data = result.data
             
-            # Use LLM to generate user-friendly response from raw API data
+            # Enhanced LLM prompt for better application agent responses
             prompt = f"""
 You are generating a final response for a user query that was executed through an application API.
 
-Agent: {agent_name}
+Agent Used: {agent_name}
 Original User Query: "{context.user_query}"
 Raw API Response: {raw_data}
 
-INSTRUCTIONS:
-Generate a helpful, conversational response based on the API execution results.
+RESPONSE REQUIREMENTS:
+1. **Direct Answer**: Address the user's specific question directly
+2. **Clear Information**: Extract and present the most relevant data from the API response
+3. **User-Friendly Format**: Present information in a conversational, easy-to-understand way
+4. **Context Awareness**: Consider what the user was asking for and prioritize that information
+5. **Actionable Insights**: If applicable, provide context about what the information means
 
-GUIDELINES:
-- Be direct and answer the user's specific question
-- Include the relevant data from the API response
-- Be conversational and helpful
-- Don't expose technical API details unless relevant
-- If it's weather data, mention the conditions and temperature clearly
-- If it's user/order data, summarize the key information
+FORMATTING GUIDELINES:
+- For weather data: Include current conditions, temperature, and any relevant alerts
+- For user/account data: Summarize key information without exposing sensitive details
+- For status/operational data: Explain what the status means and any required actions
+- For search results: Present the most relevant findings clearly
+- Keep technical jargon to a minimum unless specifically requested
+
+Generate a helpful, informative response:
 """
             
             response = self.llm_client.invoke_with_text_response(prompt, task_type=TaskType.FINAL_ANSWER)
             if response:
                 final_responses.append(response.strip())
             else:
-                # Fallback
-                final_responses.append(f"I got this information from {agent_name}: {str(raw_data)[:200]}")
+                # Enhanced fallback with better formatting
+                if isinstance(raw_data, dict):
+                    key_info = []
+                    for key, value in list(raw_data.items())[:5]:  # Show top 5 key-value pairs
+                        key_info.append(f"{key}: {value}")
+                    fallback_msg = f"Here's what I found from {agent_name}: {'; '.join(key_info)}"
+                else:
+                    fallback_msg = f"I got this information from {agent_name}: {str(raw_data)[:200]}"
+                final_responses.append(fallback_msg)
         
-        # Handle data agent results (with full data for analysis)
+        # Handle data agent results (with enhanced data analysis)
         if data_results:
             results_text = ""
             total_rows = 0
             full_data_for_analysis = []
+            visualization_context = ""
             
             for result in data_results:
                 row_count = result.row_count or 0
@@ -249,48 +269,82 @@ GUIDELINES:
                 
                 results_text += f"\\n{result.agent_name}: {row_count} records"
                 
+                # Include visualization context for better insights
+                viz_spec = result.visualization or {}
+                chart_types = viz_spec.get('output_format', [])
+                if chart_types and len(chart_types) > 1:  # More than just 'table'
+                    chart_info = [fmt for fmt in chart_types if fmt != 'table']
+                    if chart_info:
+                        visualization_context += f"\\nVisualization recommended: {', '.join(chart_info)}"
+                
                 # Include actual data for analysis (especially for trends and charts)
                 data = result.data
                 if isinstance(data, list) and data:
-                    # For small datasets (like token trends), include all data
-                    if len(data) <= 50:
+                    # For small datasets, include all data for comprehensive analysis
+                    if len(data) <= 100:
                         full_data_for_analysis.extend(data)
-                        results_text += f"\\nFull dataset for {result.agent_name}:\\n"
-                        for i, record in enumerate(data):  # Show up to 20 records in text
+                        results_text += f"\\nComplete dataset for {result.agent_name}:\\n"
+                        # Show key sample records
+                        for i, record in enumerate(data[:10]):  # Show first 10 records in summary
                             if isinstance(record, dict):
                                 record_str = ", ".join([f"{k}: {v}" for k, v in record.items()])
                                 results_text += f"  {i+1}. {record_str}\\n"
+                        if len(data) > 10:
+                            results_text += f"  ... and {len(data) - 10} more records\\n"
                     else:
                         # For larger datasets, include sample + summary stats
-                        full_data_for_analysis.extend(data)  # Include first 20 for context
+                        full_data_for_analysis.extend(data[:50])  # Include first 50 for analysis
                         first_record = data[0] if data else {}
+                        last_record = data[-1] if len(data) > 1 else {}
+                        
                         if isinstance(first_record, dict):
                             sample_fields = []
                             for key, value in list(first_record.items())[:5]:
                                 sample_fields.append(f"{key}: {str(value)[:50]}")
-                            results_text += f"\\nSample fields: {'; '.join(sample_fields)}\\n"
+                            results_text += f"\\nSample fields (first record): {'; '.join(sample_fields)}\\n"
+                            
+                            if last_record and isinstance(last_record, dict):
+                                last_fields = []
+                                for key, value in list(last_record.items())[:5]:
+                                    last_fields.append(f"{key}: {str(value)[:50]}")
+                                results_text += f"Sample fields (last record): {'; '.join(last_fields)}\\n"
             
-            # Create comprehensive prompt with actual data
+            # Create comprehensive prompt with actual data and visualization context
             data_context = ""
             if full_data_for_analysis:
-                data_context = f"\\nACTUAL DATA FOR ANALYSIS:\\n{json.dumps(full_data_for_analysis, indent=2, default=str)}"
+                # Include actual data but limit JSON size
+                if len(full_data_for_analysis) <= 20:
+                    data_context = f"\\nCOMPLETE DATA FOR ANALYSIS:\\n{json.dumps(full_data_for_analysis, indent=2, default=str)}"
+                else:
+                    # Include sample for large datasets
+                    sample_data = full_data_for_analysis[:20]
+                    data_context = f"\\nSAMPLE DATA FOR ANALYSIS (first 20 records):\\n{json.dumps(sample_data, indent=2, default=str)}"
             
             prompt = f"""
-Generate a helpful response for this user query: "{context.user_query}"
+Generate a comprehensive, insightful response for this user query: "{context.user_query}"
 
-CURRENT RESULTS:
+QUERY RESULTS SUMMARY:
 {results_text}
-Total records: {total_rows}
+Total records analyzed: {total_rows}
+{visualization_context}
 {data_context}
 
-RESPONSE GUIDELINES:
-1. Directly answer their specific question using the actual data
-2. For trend analysis, look at the patterns in the data over time
-3. Reference specific data points, dates, and values from the dataset
-4. Provide business insights and implications based on the trends
-5. If it's a "show me" request, describe what the data reveals
-6. Keep it conversational and helpful
-7. For token generation trends, analyze daily patterns and total usage
+RESPONSE REQUIREMENTS:
+1. **Direct Answer**: Address their specific question using the actual data
+2. **Data Insights**: For trend analysis, identify patterns, growth/decline, peaks, and notable changes
+3. **Specific Values**: Reference actual data points, dates, amounts, and percentages from the dataset
+4. **Business Context**: Provide actionable insights and implications based on the trends
+5. **Visualization Readiness**: If charts are recommended, describe what the user will see in the visualization
+6. **Conversational Tone**: Keep it helpful and engaging, not just a data dump
+7. **Key Findings**: Highlight the most important discoveries from the data analysis
+
+ANALYSIS GUIDELINES:
+- For sales trends: Focus on growth patterns, seasonal effects, peak periods
+- For time series: Identify trends, outliers, and significant changes over time
+- For comparisons: Highlight top performers, significant differences
+- For metrics: Provide context about what the numbers mean for business decisions
+
+Generate a response that gives the user valuable insights they can act upon:
 """
             
             response = self.llm_client.invoke_with_text_response(prompt, task_type=TaskType.FINAL_ANSWER)

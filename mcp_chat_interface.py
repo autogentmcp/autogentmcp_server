@@ -408,10 +408,16 @@ def send_query_with_streaming(query: str, conversation_id: str = None, progress_
                             """.format(display_message)
                             events_display.markdown(spinner_html, unsafe_allow_html=True)
                         
-                        # Check for completion events
-                        if event_type in ["workflow_completed", "enhanced_completed"]:
+                        # Check for completion events - only break on enhanced_completed  
+                        if event_type == "enhanced_completed":
+                            print(f"[DEBUG] Received enhanced_completed event - breaking stream")
                             final_result = event_data
                             break
+                        elif event_type in ["workflow_completed", "completed"]:
+                            # Store intermediate result but continue waiting for enhanced_completed
+                            print(f"[DEBUG] Received {event_type} event - continuing to wait for enhanced_completed")
+                            if not final_result:  # Only store if we don't have a better result yet
+                                final_result = event_data
                 
                 except json.JSONDecodeError:
                     continue  # Skip non-JSON events
@@ -422,6 +428,11 @@ def send_query_with_streaming(query: str, conversation_id: str = None, progress_
             except Exception as e:
                 print(f"Error in event loop: {e}")
                 continue
+        
+        # Debug output when SSE loop ends
+        print(f"[DEBUG] SSE stream ended. Events processed: {events_received}")
+        print(f"[DEBUG] Final result type: {final_result.get('type') if final_result else 'None'}")
+        print(f"[DEBUG] Has final_result: {final_result is not None}")
                 
         
         # Check if we received events but no final result
@@ -1185,7 +1196,10 @@ def render_chat_interface():
                 if "enhanced_result" in response:
                     # Streaming response format
                     workflow_result = response.get("enhanced_result", {})
-                    response_text = workflow_result.get("final_answer", "Analysis completed successfully!")
+                    # Check for both greeting and final_answer fields
+                    response_text = (workflow_result.get("greeting") or 
+                                   workflow_result.get("final_answer") or 
+                                   "Analysis completed successfully!")
                 else:
                     # Fallback response format (direct from backend)
                     result = response.get("result", {})
@@ -1200,14 +1214,23 @@ def render_chat_interface():
                 
                 # Enhanced visualization for data results
                 execution_results = workflow_result.get("results", [])
+                print(f"[DEBUG] workflow_result keys: {list(workflow_result.keys()) if isinstance(workflow_result, dict) else 'not a dict'}")
+                print(f"[DEBUG] execution_results type: {type(execution_results)}, length: {len(execution_results) if isinstance(execution_results, list) else 'not a list'}")
+                
                 if execution_results:
                     # Filter successful results with data
                     data_results = [r for r in execution_results if r.get("success") and r.get("data")]
+                    print(f"[DEBUG] data_results filtered: {len(data_results)} successful items with data")
                     
                     if data_results:
                         st.markdown("### 📊 Data Visualization")
+                        print(f"[DEBUG] About to call render_enhanced_results with {len(data_results)} items")
                         render_enhanced_results(data_results)
-                        print(f"[DEBUG] Rendered data results: {len(data_results)} items")
+                        print(f"[DEBUG] Successfully rendered data results: {len(data_results)} items")
+                    else:
+                        print(f"[DEBUG] No data_results to render after filtering")
+                else:
+                    print(f"[DEBUG] No execution_results found in workflow_result")
                 
                 # Show detailed workflow progress (expanded by default)
                 workflow_events = workflow_result.get("workflow_events", [])

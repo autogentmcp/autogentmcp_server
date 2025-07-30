@@ -2,7 +2,7 @@
 Tool and agent selection logic.
 """
 from typing import Dict, Any, Optional, Tuple
-from app.llm_client import llm_client
+from app.ollama_client import ollama_client
 from app.registry import fetch_agents_and_tools_from_registry
 
 class ToolSelector:
@@ -43,9 +43,9 @@ class ToolSelector:
     
     def _select_agent(self, query: str, agents: Dict[str, Any], history: str) -> Optional[str]:
         """Select the best agent for the query."""
-        prompt = llm_client.create_agent_selection_prompt(query, agents, history)
+        prompt = ollama_client.create_agent_selection_prompt(query, agents, history)
         
-        result = llm_client.invoke_with_json_response(prompt)
+        result = ollama_client.invoke_with_json_response(prompt)
         if not result:
             print("[ToolSelector] Failed to parse agent selection")
             return None
@@ -76,9 +76,9 @@ class ToolSelector:
             return tool['name'], tool
         
         # Use LLM to select tool
-        prompt = llm_client.create_tool_selection_prompt(query, app_key, agent_info)
+        prompt = ollama_client.create_tool_selection_prompt(query, app_key, agent_info)
         
-        result = llm_client.invoke_with_json_response(prompt)
+        result = ollama_client.invoke_with_json_response(prompt)
         if not result:
             print("[ToolSelector] Failed to parse tool selection")
             return None, None

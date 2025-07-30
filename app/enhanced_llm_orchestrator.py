@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.workflow_streamer import workflow_streamer
-from app.llm_client import LLMClient
+from app.multimode_llm_client import MultiModeLLMClient, TaskType
 from app.registry import fetch_agents_and_tools_from_registry, get_enhanced_agent_details_for_llm
 from app.database_query_executor import DatabaseQueryExecutor
 from app.vault_manager import vault_manager
@@ -275,8 +275,8 @@ class SessionContextManager:
             return existing_summary
         
         try:
-            from app.llm_client import LLMClient
-            llm_client = LLMClient()
+            from app.ollama_client import OllamaClient
+            llm_client = OllamaClient()
             
             # Prepare turns data for summarization
             turns_text = []
@@ -945,7 +945,7 @@ class SQLSafetyValidator:
 class LLMResultAnalyzer:
     """Analyzes query results using LLM for insights and follow-up suggestions."""
     
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: MultiModeLLMClient):
         self.llm_client = llm_client
     
     def analyze_result(self, context: ConversationContext, result_data: Any) -> Dict[str, Any]:
@@ -1059,7 +1059,7 @@ class EnhancedLLMOrchestrator:
     """
     
     def __init__(self):
-        self.llm_client = LLMClient()
+        self.llm_client = MultiModeLLMClient()
         self.db_executor = DatabaseQueryExecutor()
         self.feedback_manager = FeedbackManager()
         self.schema_introspector = SchemaIntrospector()  # No longer needs db_executor
@@ -1143,7 +1143,7 @@ class EnhancedLLMOrchestrator:
                     "plan_execution", f"⚡ {plan.get('summary', 'Executing your request...')}"
                 )
                 
-                execution_results = await self._execute_plan(plan, user_query)
+                execution_results = await self._execute_plan(plan, user_query, workflow_id, session_id)
                 
                 workflow_streamer.emit_step_completed(
                     workflow_id, session_id, "execute_plan",
@@ -1304,10 +1304,26 @@ class EnhancedLLMOrchestrator:
                 "plan": {"execution_type": "llm_only", "steps": []}
             }
     
-    async def _execute_plan(self, plan: Dict[str, Any], user_query: str) -> Dict[str, Any]:
+    async def _execute_plan(self, plan: Dict[str, Any], user_query: str, workflow_id: str, session_id: str) -> Dict[str, Any]:
         """Step 3: Execute the Plan - Coordinate agent calls and gather results."""
         execution_type = plan.get("execution_type", "llm_only")
         steps = plan.get("steps", [])
+        
+        # Emit execution plan display
+        plan_summary = plan.get("summary", "Executing your request")
+        agents_in_plan = [step.get("agent") for step in steps if step.get("agent") and step.get("agent") != "LLM"]
+        
+        if agents_in_plan:
+            workflow_streamer.emit_step_started(
+                workflow_id, session_id, "execution_plan",
+                "execution_plan", f"📋 Execution Plan: {plan_summary}"
+            )
+            
+            plan_details = f"Strategy: {execution_type}, Agents: {', '.join(agents_in_plan)}"
+            workflow_streamer.emit_step_completed(
+                workflow_id, session_id, "execution_plan",
+                "execution_plan", f"✅ Plan Ready: {plan_details}"
+            )
         
         results = {}
         
@@ -1352,6 +1368,34 @@ class EnhancedLLMOrchestrator:
                 for i, result in enumerate(parallel_results):
                     if not isinstance(result, Exception):
                         results[f"step_{step_ids[i]}"] = result
+        
+        # Emit agents used summary if any agents were executed
+        executed_agents = []
+        total_records = 0
+        total_time = 0.0
+        
+        for result_key, result_data in results.items():
+            if isinstance(result_data, dict) and result_data.get("agent_name"):
+                agent_name = result_data.get("agent_name", "Unknown")
+                row_count = result_data.get("row_count", 0)
+                exec_time = result_data.get("execution_time", 0)
+                executed_agents.append(agent_name)
+                total_records += row_count
+                total_time += exec_time
+        
+        if executed_agents:
+            workflow_streamer.emit_step_started(
+                workflow_id, session_id, "agents_summary",
+                "agents_summary", "📊 Summarizing Agent Results..."
+            )
+            
+            agents_list = ", ".join(set(executed_agents))  # Remove duplicates
+            summary_text = f"✅ Agents Used: {agents_list} | Total: {total_records} records in {total_time:.1f}s"
+            
+            workflow_streamer.emit_step_completed(
+                workflow_id, session_id, "agents_summary",
+                "agents_summary", summary_text
+            )
         
         return results
     
@@ -1404,7 +1448,10 @@ class EnhancedLLMOrchestrator:
             Keep it conversational and helpful.
             """
             
-            response = self.llm_client.invoke_with_text_response(prompt)
+            response = self.llm_client.invoke_with_text_response(
+                prompt, 
+                task_type=TaskType.GENERAL
+            )
             return response if response else "I'm here to help! What would you like to know?"
             
         except Exception as e:
@@ -1573,7 +1620,11 @@ class EnhancedLLMOrchestrator:
         """
         
         try:
-            response = self.llm_client.invoke_with_json_response(prompt, timeout=30)
+            response = self.llm_client.invoke_with_json_response(
+                prompt, 
+                timeout=30, 
+                task_type=TaskType.INTENT_ANALYSIS
+            )
             if response:
                 context.refined_query = response.get("refined_query", context.original_query)
                 context.requires_follow_up = response.get("requires_multi_step", False)
@@ -2217,6 +2268,18 @@ class EnhancedLLMOrchestrator:
             agent_type = agent.get("agent_type", "unknown")
             agent_name = agent.get("name", agent_id)
             
+            # Emit detailed step: Selected Agent
+            workflow_streamer.emit_step_started(
+                context.workflow_id, context.session_id, f"agent_selected_{agent_id}",
+                "agent_selection", f"🎯 Selected Agent: {agent_name}"
+            )
+            
+            workflow_streamer.emit_step_completed(
+                context.workflow_id, context.session_id, f"agent_selected_{agent_id}",
+                "agent_selection", f"✅ Using {agent_name} ({agent_type})"
+            )
+            
+            # Execute based on agent type
             if agent_type == "data_agent":
                 result_data = await self._execute_data_agent(agent_id, query, context)
             elif agent_type == "application":
@@ -2225,6 +2288,21 @@ class EnhancedLLMOrchestrator:
                 raise Exception(f"Unknown agent type: {agent_type}")
             
             execution_time = time.time() - start_time
+            
+            # Emit completion with agent summary
+            workflow_streamer.emit_step_started(
+                context.workflow_id, context.session_id, f"agent_summary_{agent_id}",
+                "execution_summary", f"📊 Agent Execution Summary"
+            )
+            
+            row_count = result_data.get("row_count", 0)
+            query_executed = result_data.get("query", "")
+            summary_msg = f"✅ {agent_name} completed: {row_count} records in {execution_time:.1f}s"
+            
+            workflow_streamer.emit_step_completed(
+                context.workflow_id, context.session_id, f"agent_summary_{agent_id}",
+                "execution_summary", summary_msg
+            )
             
             return EnhancedAgentResult(
                 success=True,
@@ -2240,6 +2318,17 @@ class EnhancedLLMOrchestrator:
         except Exception as e:
             execution_time = time.time() - start_time
             print(f"❌ Agent execution failed: {e}")
+            
+            # Emit failure step
+            workflow_streamer.emit_step_started(
+                context.workflow_id, context.session_id, f"agent_failed_{agent_id}",
+                "execution_error", f"❌ Agent {agent.get('name', agent_id)} Failed"
+            )
+            
+            workflow_streamer.emit_step_completed(
+                context.workflow_id, context.session_id, f"agent_failed_{agent_id}",
+                "execution_error", f"❌ Error: {str(e)}"
+            )
             
             return EnhancedAgentResult(
                 success=False,
@@ -2258,6 +2347,14 @@ class EnhancedLLMOrchestrator:
         if not agent_details:
             raise Exception(f"Agent details not found for {agent_id}")
 
+        agent_name = agent_details.get('name', agent_id)
+        
+        # Emit step: Preparing agent execution
+        workflow_streamer.emit_step_started(
+            context.workflow_id, context.session_id, f"prepare_agent_{agent_id}",
+            "agent_preparation", f"🔧 Preparing {agent_name} for execution..."
+        )
+
         # Get fresh schema
         schema_summary = self.schema_introspector.get_schema_summary(agent_id)
 
@@ -2269,6 +2366,17 @@ class EnhancedLLMOrchestrator:
             print(f"[Orchestrator] WARNING: connection_type missing for agent {agent_id}, using database_type: {connection_type}")
         if not connection_type or connection_type == "unknown":
             raise Exception(f"Agent {agent_id} is missing a valid connection_type/database_type in registry cache.")
+
+        workflow_streamer.emit_step_completed(
+            context.workflow_id, context.session_id, f"prepare_agent_{agent_id}",
+            "agent_preparation", f"✅ {agent_name} ready ({connection_type} database)"
+        )
+
+        # Emit step: Generating SQL Query
+        workflow_streamer.emit_step_started(
+            context.workflow_id, context.session_id, f"sql_generation_{agent_id}",
+            "sql_generation", f"🧠 Generating SQL Query for {agent_name}..."
+        )
 
         # Generate SQL using LLM with enhanced schema qualification
         # Get the full tables structure with columns data
@@ -2304,7 +2412,11 @@ class EnhancedLLMOrchestrator:
         )
 
         try:
-            sql_response = self.llm_client.invoke_with_json_response(sql_prompt, timeout=60)
+            sql_response = self.llm_client.invoke_with_json_response(
+                sql_prompt, 
+                timeout=60, 
+                task_type=TaskType.SQL_GENERATION
+            )
             
             # Extract SQL from JSON response
             if sql_response and "query" in sql_response:
@@ -2317,18 +2429,32 @@ class EnhancedLLMOrchestrator:
                 sql_query = self._clean_sql_query(sql_query)
                 print(f"[DEBUG] Orchestrator: Fallback SQL: {sql_query}")
 
-           
-
             # Clean the SQL query
             sql_query = self._clean_sql_query(sql_query)
+
+            workflow_streamer.emit_step_completed(
+                context.workflow_id, context.session_id, f"sql_generation_{agent_id}",
+                "sql_generation", f"✅ SQL Query Generated: {sql_query[:80]}{'...' if len(sql_query) > 80 else ''}"
+            )
+
+            # Emit step: Validating and executing query
+            workflow_streamer.emit_step_started(
+                context.workflow_id, context.session_id, f"execute_query_{agent_id}",
+                "query_execution", f"⚡ Executing Query on {agent_name}..."
+            )
 
             # CRITICAL: Validate SQL safety before execution
             safety_check = self.sql_validator.validate_sql_safety(sql_query)
 
             if not safety_check["is_safe"]:
                 error_msg = f"SQL Safety Violation: {'; '.join(safety_check['violations'])}"
-                print(f"� {error_msg}")
+                print(f"🚨 {error_msg}")
                 print(f"🚨 Rejected Query: {sql_query}")
+                
+                workflow_streamer.emit_step_completed(
+                    context.workflow_id, context.session_id, f"execute_query_{agent_id}",
+                    "query_execution", f"❌ SQL Safety Violation: Query rejected"
+                )
                 raise Exception(f"Query rejected for safety: {error_msg}")
 
             # Use the sanitized query
@@ -2360,6 +2486,7 @@ class EnhancedLLMOrchestrator:
 
             if db_result.get("status") == "success":
                 data = db_result.get("data", [])
+                execution_time = db_result.get("execution_time", 0)
                 
                 # Post-process data if sampling was applied
                 final_data = data
@@ -2368,6 +2495,13 @@ class EnhancedLLMOrchestrator:
                         data, sampling_config, query
                     )
                 
+                row_count = len(final_data) if isinstance(final_data, list) else 1
+                
+                workflow_streamer.emit_step_completed(
+                    context.workflow_id, context.session_id, f"execute_query_{agent_id}",
+                    "query_execution", f"✅ Query Executed: {row_count} records retrieved in {execution_time:.1f}s"
+                )
+                
                 return {
                     "query": optimized_sql,  # Return the executed query
                     "original_query": sql_query,
@@ -2375,17 +2509,27 @@ class EnhancedLLMOrchestrator:
                     "safety_check": safety_check,
                     "sampling_config": sampling_config,
                     "data": final_data,
-                    "row_count": len(final_data) if isinstance(final_data, list) else 1,
-                    "execution_time": db_result.get("execution_time", 0),
+                    "row_count": row_count,
+                    "execution_time": execution_time,
                     "sampling_applied": sampling_config is not None
                 }
             else:
                 # Surface the full error message from db_result
                 error_msg = db_result.get('error') or db_result.get('message') or 'Unknown error'
                 print(f"❌ Database query failed: {error_msg}")
+                
+                workflow_streamer.emit_step_completed(
+                    context.workflow_id, context.session_id, f"execute_query_{agent_id}",
+                    "query_execution", f"❌ Query Failed: {error_msg}"
+                )
                 raise Exception(f"Database query failed: {error_msg}")
 
         except Exception as e:
+            # Emit step: Error occurred
+            workflow_streamer.emit_step_completed(
+                context.workflow_id, context.session_id, f"sql_generation_{agent_id}",
+                "sql_generation", f"❌ SQL Generation Failed: {str(e)}"
+            )
             raise Exception(f"Data agent execution failed: {str(e)}")
     
     async def _execute_application_agent(self, agent_id: str, query: str, context: ConversationContext) -> Dict[str, Any]:
@@ -2524,7 +2668,10 @@ class EnhancedLLMOrchestrator:
                 data_summary = f"Retrieved {len(successful_results)} datasets with {sum(len(r.data) if isinstance(r.data, list) else 1 for r in successful_results)} total records"
                 prompt += f"\n\nData available: {data_summary}\nProvide useful business insights from this data."
             
-            response = self.llm_client.invoke_with_text_response(prompt)
+            response = self.llm_client.invoke_with_text_response(
+                prompt, 
+                task_type=TaskType.CONVERSATION
+            )
             return response if response else "I'm here to help! What would you like to know?"
             
         except Exception as e:
@@ -2595,7 +2742,10 @@ class EnhancedLLMOrchestrator:
             The tone should be like a helpful assistant who wants to understand exactly what the user needs.
             """
             
-            response = self.llm_client.invoke_with_text_response(prompt)
+            response = self.llm_client.invoke_with_text_response(
+                prompt, 
+                task_type=TaskType.CONVERSATION
+            )
             return response if response else self._generate_fallback_clarification()
             
         except Exception as e:
@@ -2668,7 +2818,10 @@ For example, you could ask about inventory levels, sales data, customer informat
             Generate a comprehensive, business-focused response that directly addresses what the user is asking for.
             """
             
-            response = self.llm_client.invoke_with_text_response(prompt)
+            response = self.llm_client.invoke_with_text_response(
+                prompt, 
+                task_type=TaskType.DATA_ANSWER
+            )
             return response if response else "I've analyzed your data and retrieved the requested information."
             
         except Exception as e:

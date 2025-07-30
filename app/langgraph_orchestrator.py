@@ -161,7 +161,7 @@ class WorkflowOrchestrator:
     
     def _create_dynamic_plan(self, state: WorkflowState) -> WorkflowState:
         """LLM creates dynamic execution plan"""
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         from app.registry import fetch_agents_and_tools_from_registry
         
         self._emit_streaming_event(state, "thinking", "🧠 Analyzing query and creating execution plan...")
@@ -287,7 +287,7 @@ class WorkflowOrchestrator:
             # Emit progress event before LLM call to keep streaming alive
             self._emit_streaming_event(state, "llm_planning", "🤖 Waiting for AI to create execution plan...")
             
-            plan_result = llm_client.invoke_with_json_response(planning_prompt)
+            plan_result = ollama_client.invoke_with_json_response(planning_prompt)
             
             state["execution_plan"] = plan_result.get("execution_plan", [])
             state["plan_reasoning"] = plan_result.get("plan_reasoning", "")
@@ -458,7 +458,7 @@ class WorkflowOrchestrator:
     def _execute_form_query(self, state: WorkflowState, step_data: Dict[str, Any]):
         """Execute form query step - use LLM + full agent details to generate SQL"""
         from app.registry import get_enhanced_agent_details_for_llm
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         
         if not state.get("current_agent"):
             self._emit_streaming_event(state, "error", "❌ No agent selected for query formation")
@@ -527,11 +527,11 @@ class WorkflowOrchestrator:
             tables_data = agent_details.get('tables', [])
             
             # Generate column reference using our enhanced method
-            from app.llm_client import llm_client
+            from app.ollama_client import ollama_client
             column_reference = ""
             if tables_data:
                 try:
-                    column_reference = llm_client._extract_column_reference_from_structured_data(tables_data)
+                    column_reference = ollama_client._extract_column_reference_from_structured_data(tables_data)
                     print(f"[DEBUG] LangGraphOrchestrator: Generated column reference for {len(tables_data)} tables")
                 except Exception as e:
                     print(f"[DEBUG] LangGraphOrchestrator: Error generating column reference: {e}")
@@ -626,7 +626,7 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
             
             try:
                 # Call LLM with timeout to prevent UI timeouts
-                sql_response = llm_client.invoke_with_json_response(sql_prompt)
+                sql_response = ollama_client.invoke_with_json_response(sql_prompt)
                 
                 if not sql_response:
                     raise Exception("LLM returned empty response")
@@ -852,7 +852,7 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
     
     def _execute_data_analysis(self, state: WorkflowState, step_data: Dict[str, Any]):
         """Execute data analysis step"""
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         
         self._emit_streaming_event(state, "analyzing", 
                                  f"📈 Analyzing collected data: {step_data.get('description', 'Data analysis')}")
@@ -874,7 +874,7 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
         """
         
         try:
-            analysis_result = llm_client.invoke_with_json_response(analysis_prompt)
+            analysis_result = ollama_client.invoke_with_json_response(analysis_prompt)
             state["current_results"] = analysis_result
             
             # Show key findings
@@ -886,7 +886,7 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
     
     def _evaluate_and_decide_next(self, state: WorkflowState) -> WorkflowState:
         """LLM evaluates progress and decides next action"""
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         
         self._emit_streaming_event(state, "thinking", "🤔 Evaluating progress and planning next steps...")
         
@@ -1036,7 +1036,7 @@ Respond with ONLY valid JSON - validate every column against the schema!"""
     
     def _finalize_workflow(self, state: WorkflowState) -> WorkflowState:
         """Generate final comprehensive answer"""
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         import time
         
         self._emit_streaming_event(state, "finalizing", "✨ Generating comprehensive final answer...")
@@ -1103,13 +1103,13 @@ What would you like to work on today? Feel free to ask me anything about your da
                     self._emit_streaming_event(state, "formatting_data_results", 
                                              "📊 Formatting SQL query results with LLM analysis...")
                     
-                    data_prompt = llm_client.create_data_answer_prompt(
+                    data_prompt = ollama_client.create_data_answer_prompt(
                         query=state['user_query'],
                         sql_query=sql_query,
                         query_result=sql_results
                     )
                     
-                    state["final_answer"] = llm_client.invoke_with_text_response(data_prompt)
+                    state["final_answer"] = ollama_client.invoke_with_text_response(data_prompt)
                     logger.info("Generated final answer using SQL results")
                     
                 else:
@@ -1135,7 +1135,7 @@ What would you like to work on today? Feel free to ask me anything about your da
                     Include relevant data insights, recommendations, and next steps if applicable.
                     """
                     
-                    state["final_answer"] = llm_client.invoke_with_text_response(final_prompt)
+                    state["final_answer"] = ollama_client.invoke_with_text_response(final_prompt)
                     logger.info("Generated final answer using general prompt")
             
             state["workflow_status"] = "completed"

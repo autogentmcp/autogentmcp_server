@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 
 from app.workflow_streamer import workflow_streamer, EventType, StreamEvent
-from app.llm_client import LLMClient
+from app.ollama_client import OllamaClient
 from app.registry import fetch_agents_and_tools_from_registry
 from app.database_query_executor import DatabaseQueryExecutor
 from app.context_manager import ContextManager
@@ -88,12 +88,10 @@ class EnhancedOrchestrator:
     """
     
     def __init__(self):
-        self.llm_client = LLMClient()
+        self.llm_client = OllamaClient()
         self.registry_manager = RegistryManager()
         self.db_executor = DatabaseQueryExecutor()
         self.context_manager = ContextManager()
-        # Store workflow contexts in memory (in production, use persistent storage)
-        self.workflow_contexts: Dict[str, WorkflowContext] = {}
         
     async def execute_workflow(self, user_query: str, session_id: str) -> Dict[str, Any]:
         """
@@ -118,9 +116,6 @@ class EnhancedOrchestrator:
             agent_results=[],
             current_step=0
         )
-        
-        # Store workflow context for later retrieval
-        self.workflow_contexts[workflow_id] = context
         
         # Emit workflow started
         workflow_streamer.emit_workflow_started(
@@ -154,27 +149,11 @@ class EnhancedOrchestrator:
                 elif agent_recommendation.get("action") == "require_user_choice":
                     # LLM wants user to choose between multiple agents
                     await self._request_user_agent_choice(context, agent_recommendation)
-                    # Return partial result indicating user choice is required
-                    return {
-                        "status": "user_choice_required",
-                        "workflow_id": context.workflow_id,
-                        "session_id": context.session_id,
-                        "current_step": context.current_step,
-                        "message": "Multiple agents available - user choice required to continue",
-                        "choice_options": agent_recommendation.get("user_choice_options", [])
-                    }
+                    break  # Pause workflow for user input
                 elif agent_recommendation.get("action") == "require_user_input":
                     # LLM needs additional information from user
                     await self._request_user_input(context, agent_recommendation)
-                    # Return partial result indicating user input is required
-                    return {
-                        "status": "user_input_required", 
-                        "workflow_id": context.workflow_id,
-                        "session_id": context.session_id,
-                        "current_step": context.current_step,
-                        "message": "Additional information required to continue",
-                        "input_request": agent_recommendation.get("user_input_request", "")
-                    }
+                    break  # Pause workflow for user input
                 
                 # Step 2: Select and validate the recommended agent
                 selected_agent = await self._select_agent(context, agent_recommendation)
@@ -197,26 +176,9 @@ class EnhancedOrchestrator:
                 if agent_request.get("action") == "suggest_narrowing":
                     # Query is too complex, suggest user to narrow scope
                     await self._request_query_narrowing(context, agent_request)
-                    # Return partial result indicating query narrowing is required
-                    return {
-                        "status": "query_narrowing_required",
-                        "workflow_id": context.workflow_id,
-                        "session_id": context.session_id,
-                        "current_step": context.current_step,
-                        "message": "Query is too complex - please narrow the scope",
-                        "narrowing_suggestions": agent_request.get("suggestions", [])
-                    }
+                    break  # Pause workflow for user refinement
                 
-                # Validate request based on agent type
-                is_valid_request = False
-                if selected_agent.get("agent_type") == "application":
-                    # For applications, check for API request details
-                    is_valid_request = bool(agent_request and agent_request.get("api_url"))
-                else:
-                    # For data agents, check for SQL query
-                    is_valid_request = bool(agent_request and agent_request.get("sql_query"))
-                
-                if not is_valid_request:
+                if not agent_request or not agent_request.get("sql_query"):
                     # No valid request could be prepared
                     workflow_streamer.emit_error(
                         workflow_id, session_id, f"step_{context.current_step}",
@@ -302,15 +264,7 @@ class EnhancedOrchestrator:
                 elif next_step_decision.get("action") == "require_user_input":
                     # Request user input and wait
                     await self._request_user_input(context, next_step_decision)
-                    # Return partial result indicating user input is required
-                    return {
-                        "status": "user_input_required",
-                        "workflow_id": context.workflow_id, 
-                        "session_id": context.session_id,
-                        "current_step": context.current_step,
-                        "message": "Additional information required to continue analysis",
-                        "input_request": next_step_decision.get("user_input_request", "")
-                    }
+                    break  # For now, break on user input (can be extended)
             
             # Generate final result
             final_result = await self._generate_final_result(context)
@@ -360,8 +314,7 @@ class EnhancedOrchestrator:
                 "database_id": a["id"],
                 "name": a["name"], 
                 "description": a.get("description", ""),
-                "agent_type": a.get("agent_type", "data_agent"),
-                "region": self._extract_region_from_agent(a)
+                "agent_type": a.get("agent_type", "data_agent")
             }
             
             # Extract capabilities properly based on agent type
@@ -378,30 +331,12 @@ class EnhancedOrchestrator:
                     }
                     capabilities.append(cap)
                 agent_info["capabilities"] = capabilities
-                agent_info["endpoint_count"] = len(endpoints)
             else:
-                # For data agents, get enhanced details for better context
-                try:
-                    from app.registry import get_enhanced_agent_details_for_llm
-                    agent_details = get_enhanced_agent_details_for_llm(a["id"])
-                    if agent_details:
-                        agent_info["capabilities"] = {
-                            "database_type": agent_details.get("database_type", ""),
-                            "description": agent_details.get("description", a.get("description", "")),
-                            "table_count": len(agent_details.get("tables", [])),
-                            "sample_tables": [t.get("name", "") for t in agent_details.get("tables", [])[:3]]
-                        }
-                    else:
-                        agent_info["capabilities"] = {
-                            "database_type": a.get("database_type", ""),
-                            "description": a.get("description", "")
-                        }
-                except:
-                    # Fallback if enhanced details are not available
-                    agent_info["capabilities"] = {
-                        "database_type": a.get("database_type", ""),
-                        "description": a.get("description", "")
-                    }
+                # For data agents, use database type and description
+                agent_info["capabilities"] = {
+                    "database_type": a.get("database_type", ""),
+                    "description": a.get("description", "")
+                }
             
             available_agents_for_llm.append(agent_info)
 
@@ -419,24 +354,19 @@ class EnhancedOrchestrator:
         
         Instructions:
         1. If the user query is fully answered with existing results, return {{"action": "complete"}}
-        2. PREFER making intelligent agent selections over asking for user choice
-        3. For ambiguous queries, choose the MOST COMPREHENSIVE or MOST LIKELY agent based on:
-           - Data completeness (more tables/data is usually better)
-           - Geographic preference (US agents for general queries unless specified otherwise)
-           - Agent capabilities and data richness
-        4. For APPLICATIONS (agent_type: "application"), use their primary identifier (id field, which is the appKey)
-        5. For DATA AGENTS (agent_type: "data_agent"), use their database_id field
-        6. Only require user choice if agents are FUNDAMENTALLY different domains (e.g., retail vs financial vs HR)
-        7. For similar agents in different regions, default to the most comprehensive one
-        8. If you need additional context or information from the user, return {{"action": "require_user_input"}}
+        2. If more data/analysis is needed, recommend the best agent for the next step
+        3. For APPLICATIONS (agent_type: "application"), use their primary identifier (id field, which is the appKey)
+        4. For DATA AGENTS (agent_type: "data_agent"), use their database_id field
+        5. Consider what information is still missing or needs clarification
+        6. Choose agents that complement previous results, not duplicate them
+        7. For cross-database analysis or multi-agent queries, prefer the enhanced LLM orchestrator with high confidence
+        8. Only request user choice if the query is ambiguous about the specific data source or business context
+        9. If you need additional context or information from the user, return {{"action": "require_user_input"}}
+        10. If the same agent has been used repeatedly without clear progress, try a different approach
         
-        Examples of automatic selection (PREFERRED):
-        - Query: "retail sales data" → Select the agent with most tables/comprehensive data
-        - Query: "customer data" → Select the most complete customer database
-        - Query: "store information" → Select the retail agent with store data
+        IMPORTANT: When recommending an agent, use the "id" field from the Available Agents list above as the recommended_agent_id.
         
-        Only require user choice for truly different domains:
-        - Query: "sales data" where options are: Retail DB, Financial DB, HR DB
+        For inventory analysis, cross-database comparisons, or multi-agent scenarios, prefer using the enhanced LLM orchestrator automatically.
         
         IMPORTANT: When recommending an agent, use the "id" field from the Available Agents list above as the recommended_agent_id.
         
@@ -444,23 +374,20 @@ class EnhancedOrchestrator:
         {{
             "action": "recommend_agent" | "complete" | "require_user_choice" | "require_user_input",
             "recommended_agent_id": "agent_id_if_recommending",
-            "reasoning": "detailed explanation of why this specific agent was selected OR why user choice is required for fundamentally different domains",
-            "expected_outcome": "what this agent should accomplish if recommending single agent",
+            "reasoning": "why this agent is needed or why user choice is required",
+            "expected_outcome": "what this agent should accomplish",
             "confidence": 0.95,
             "user_choice_options": [
-                {{"id": "agent1", "name": "Agent Name", "region": "geographical or business area", "description": "detailed description of what this agent provides", "reason": "why this agent matches the query", "expected_outcome": "what data/results it would provide"}},
-                {{"id": "agent2", "name": "Agent Name", "region": "geographical or business area", "description": "detailed description of what this agent provides", "reason": "why this agent matches the query", "expected_outcome": "what data/results it would provide"}}
+                {{"id": "agent1", "name": "Agent Name", "reason": "why this agent", "expected_outcome": "what it would do"}},
+                {{"id": "agent2", "name": "Agent Name", "reason": "why this agent", "expected_outcome": "what it would do"}}
             ],
-            "user_input_request": "what specific information to ask the user",
-            "ambiguity_detected": true/false,
-            "matching_agents_count": 0,
-            "selection_strategy": "automatic_best_match | user_choice_required | insufficient_info"
+            "user_input_request": "what specific information to ask the user"
         }}
         """
         
         try:
             print(f"[EnhancedOrchestrator] Calling LLM for agent recommendation...")
-            recommendation = self.llm_client.invoke_with_json_response(prompt, timeout=600)
+            recommendation = self.ollama_client.invoke_with_json_response(prompt, timeout=600)
             print(f"[EnhancedOrchestrator] LLM recommendation result: {recommendation}")
             if not recommendation:
                 raise Exception("No valid JSON response received from LLM")
@@ -489,7 +416,12 @@ class EnhancedOrchestrator:
         if not agent_id:
             return None
         
-        # Get agent details from registry first to get the friendly name
+        workflow_streamer.emit_step_started(
+            context.workflow_id, context.session_id, f"step_{context.current_step}_select",
+            "agent_selection", f"🎯 Selecting agent: {agent_id}..."
+        )
+        
+        # Get agent details from registry
         agents = self.registry_manager.list_available_agents()
         
         # For applications, prioritize appKey as the unique identifier
@@ -506,14 +438,6 @@ class EnhancedOrchestrator:
         # If still not found, try by database ID (primary identifier for data agents)
         if not selected_agent:
             selected_agent = next((a for a in agents if a["id"] == agent_id), None)
-        
-        # Use the agent name for display, fallback to agent_id if not found
-        display_name = selected_agent.get("name", agent_id) if selected_agent else agent_id
-        
-        workflow_streamer.emit_step_started(
-            context.workflow_id, context.session_id, f"step_{context.current_step}_select",
-            "agent_selection", f"🎯 Selecting agent: {display_name}..."
-        )
         
         if not selected_agent:
             print(f"[EnhancedOrchestrator] Warning: Agent '{agent_id}' not found. Available agents:")
@@ -556,15 +480,14 @@ class EnhancedOrchestrator:
     
     async def _prepare_application_request(self, context: WorkflowContext, agent: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare API request for application agents."""
-        # Get application details from registry using appKey (the agent id that LLM recommends)
+        # Get application details from registry
         from app.registry import get_enhanced_agent_details_for_llm
-        agent_lookup_id = agent.get("appKey") or agent["id"]  # Use appKey if available, fallback to id
-        app_details = get_enhanced_agent_details_for_llm(agent_lookup_id)
+        app_details = get_enhanced_agent_details_for_llm(agent["id"])
         
         if not app_details:
             workflow_streamer.emit_error(
                 context.workflow_id, context.session_id, f"step_{context.current_step}_prepare",
-                f"Application details not found for {agent_lookup_id} (appKey: {agent.get('appKey')}, id: {agent.get('id')})"
+                f"Application details not found for {agent['id']}"
             )
             return {}
         
@@ -623,7 +546,7 @@ class EnhancedOrchestrator:
         """
         
         try:
-            request_details = self.llm_client.invoke_with_json_response(prompt, timeout=600)
+            request_details = self.ollama_client.invoke_with_json_response(prompt, timeout=600)
             if not request_details:
                 raise Exception("No valid JSON response received from LLM")
             
@@ -681,11 +604,11 @@ class EnhancedOrchestrator:
         sample_queries = agent_details.get('sample_queries', [])
         
         # Generate column reference from LLM client like in langgraph
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         column_reference = ""
         tables_data = agent_details.get('tables', [])
         if tables_data:
-            column_reference = llm_client._extract_column_reference_from_structured_data(tables_data)
+            column_reference = ollama_client._extract_column_reference_from_structured_data(tables_data)
         else:
             column_reference = "⚠️  Use ONLY exact column names from the schema below"
         
@@ -737,7 +660,7 @@ class EnhancedOrchestrator:
         """
         
         try:
-            request_details = self.llm_client.invoke_with_json_response(prompt, timeout=600)
+            request_details = self.ollama_client.invoke_with_json_response(prompt, timeout=600)
             if not request_details:
                 raise Exception("No valid JSON response received from LLM")
             
@@ -1155,6 +1078,11 @@ class EnhancedOrchestrator:
         recent_results = context.agent_results[-3:]  # Last 3 results
         context_summary = await self._prepare_context_summary(context)
         
+        # Check for technical failures in the most recent result
+        recent_failure = None
+        if recent_results and not recent_results[-1].success:
+            recent_failure = recent_results[-1]
+        
         # Check for loops - if we've executed similar queries multiple times
         recent_queries = [r.query_executed for r in recent_results if r.query_executed]
         query_counts = {}
@@ -1164,6 +1092,16 @@ class EnhancedOrchestrator:
         
         has_loops = any(count >= 2 for count in query_counts.values())
         max_repeated_count = max(query_counts.values()) if query_counts else 0
+        
+        # Check if this is a technical failure that shouldn't trigger agent switching
+        is_technical_failure = (recent_failure and 
+                               recent_failure.error and 
+                               any(tech_error in recent_failure.error.lower() for tech_error in 
+                                   ['syntax error', 'limit', 'sql server', 'database error', 'connection', 'timeout']))
+        
+        # Check if user query specifically requested data from a particular agent/database
+        user_wants_specific_source = any(keyword in context.original_query.lower() for keyword in 
+                                       ['mssql', 'sql server', 'autogent', 'retail', 'specific database'])
         
         prompt = f"""
         You are evaluating the progress of a multi-step data analysis workflow.
@@ -1185,33 +1123,49 @@ class EnhancedOrchestrator:
         
         All Results Summary: {json.dumps(context.get_execution_summary(), indent=2)}
         
+        CRITICAL ANALYSIS:
+        - Technical failure detected: {"YES" if is_technical_failure else "NO"}
+        - User wants specific data source: {"YES" if user_wants_specific_source else "NO"}
+        - Recent failure: {json.dumps({"agent": recent_failure.agent_name, "error": recent_failure.error} if recent_failure else None)}
+        
         LOOP DETECTION ALERT: 
         - Similar queries repeated: {"YES" if has_loops else "NO"}
         - Maximum repetition count: {max_repeated_count}
         - Query patterns: {json.dumps(query_counts, indent=2)}
         
+        AGENT SWITCHING POLICY:
+        1. **NEVER switch agents for technical failures** (SQL syntax, connection issues, etc.)
+        2. **NEVER switch agents if user requested specific data source** - they want data from that specific database
+        3. **Only switch agents when:**
+           - User explicitly requests multi-source analysis
+           - Current agent doesn't have relevant data (confirmed by successful query with no results)
+           - User query requires complementary data from different sources
+        4. **For technical failures:** Either fix the issue and retry the same agent, or complete with error explanation
+        
         Instructions:
-        1. **CRITICAL**: If similar queries have been repeated 2+ times, strongly consider completing the workflow to avoid infinite loops
-        2. Evaluate if the original user query has been adequately answered
-        3. Consider data quality, completeness, and relevance
-        4. Decide if more data gathering or analysis is needed
-        5. Consider if user input is required for clarification
-        6. **AVOID INFINITE LOOPS** - aim for completion when reasonable, especially if loops detected
+        1. **CRITICAL**: If this is a technical failure, do NOT continue to another agent - complete the workflow with appropriate error message
+        2. **CRITICAL**: If user wants data from a specific source, do NOT switch agents - complete with error explanation if that agent failed
+        3. If similar queries have been repeated 2+ times, strongly consider completing the workflow to avoid infinite loops
+        4. Evaluate if the original user query has been adequately answered
+        5. Consider data quality, completeness, and relevance
+        6. **AVOID AGENT SWITCHING** unless user explicitly wants multi-source analysis
         
         Respond with JSON:
         {{
             "action": "continue" | "complete" | "require_user_input",
-            "reasoning": "detailed explanation of the decision (must address loop detection if applicable)",
+            "reasoning": "detailed explanation of the decision (must address technical failures and agent switching policy)",
             "completeness_score": 0.85,
             "missing_information": ["list", "of", "gaps"],
             "user_input_request": "what to ask user if action is require_user_input",
             "confidence": 0.90,
-            "loop_detected": {str(has_loops).lower()}
+            "loop_detected": {str(has_loops).lower()},
+            "technical_failure_detected": {str(is_technical_failure).lower()},
+            "should_avoid_agent_switching": {str(is_technical_failure or user_wants_specific_source).lower()}
         }}
         """
         
         try:
-            decision = self.llm_client.invoke_with_json_response(prompt, timeout=600)
+            decision = self.ollama_client.invoke_with_json_response(prompt, timeout=600)
             if not decision:
                 raise Exception("No valid JSON response received from LLM")
             
@@ -1254,145 +1208,45 @@ class EnhancedOrchestrator:
         )
     
     async def _request_user_agent_choice(self, context: WorkflowContext, recommendation: Dict[str, Any]):
-        """Request user to choose between multiple agents with enhanced descriptions."""
+        """Request user to choose between multiple agents."""
         choice_options = recommendation.get("user_choice_options", [])
         
-        # If no specific options provided, create enhanced options from all available agents
+        # If no specific options provided, create options from all available agents
         if not choice_options:
             available_agents = self.registry_manager.list_available_agents()
-            
-            # Get detailed descriptions for ambiguous agents
-            enhanced_options = []
-            for agent in available_agents:
-                # Get enhanced agent details for better description
-                from app.registry import get_enhanced_agent_details_for_llm
-                agent_details = get_enhanced_agent_details_for_llm(agent["id"])
-                
-                enhanced_option = {
-                    "id": agent.get("appKey") or agent["id"],
-                    "name": agent["name"],
-                    "region": self._extract_region_from_agent(agent),
-                    "description": agent_details.get("description", agent.get("description", "")),
-                    "agent_type": agent.get("agent_type", "data_agent"),
+            choice_options = [
+                {
+                    "id": agent["id"],
+                    "name": agent["name"], 
                     "reason": f"Access to {agent.get('description', 'database')}",
                     "expected_outcome": f"Query data from {agent['name']}"
                 }
-                
-                # Add specific details based on agent type
-                if agent.get("agent_type") == "application":
-                    enhanced_option["capabilities"] = [
-                        f"{ep.get('method', 'GET')} {ep.get('path', '')}: {ep.get('description', '')}"
-                        for ep in agent.get("endpoints", [])[:3]  # Limit to first 3 endpoints
-                    ]
-                    enhanced_option["expected_outcome"] = f"API calls to {agent['name']} application"
-                else:
-                    # For data agents, include database info
-                    enhanced_option["database_type"] = agent.get("database_type", "unknown")
-                    enhanced_option["table_count"] = len(agent_details.get("tables", [])) if agent_details else 0
-                    enhanced_option["expected_outcome"] = f"SQL queries on {agent['name']} database ({enhanced_option['table_count']} tables)"
-                
-                enhanced_options.append(enhanced_option)
-            
-            choice_options = enhanced_options
+                for agent in available_agents
+            ]
         
-        # Enhance existing options if they don't have full details
-        enhanced_choice_options = []
-        for option in choice_options:
-            if not option.get("description") or len(option.get("description", "")) < 20:
-                # Get more detailed description from registry
-                try:
-                    from app.registry import get_enhanced_agent_details_for_llm
-                    agent_details = get_enhanced_agent_details_for_llm(option["id"])
-                    if agent_details:
-                        option["description"] = agent_details.get("description", option.get("description", ""))
-                        option["region"] = self._extract_region_from_name(option["name"])
-                        
-                        # Add database context for data agents
-                        if not option.get("agent_type") or option.get("agent_type") == "data_agent":
-                            tables = agent_details.get("tables", [])
-                            if tables:
-                                option["table_info"] = f"{len(tables)} tables available"
-                                option["sample_tables"] = [t.get("name", "") for t in tables[:3]]
-                except:
-                    pass  # Continue with existing option if enhancement fails
-            
-            enhanced_choice_options.append(option)
-        
-        # Create a summary of options for the prompt
-        options_summary = []
-        for i, option in enumerate(enhanced_choice_options, 1):
-            options_summary.append(f"{i}. {option.get('name', 'Unknown')} (ID: {option.get('id', 'N/A')}) - {option.get('region', 'Unknown')} - {option.get('description', 'No description')[:100]}...")
-        
-        prompt_text = f"Multiple agents could handle your request. Please choose the most appropriate one:\n\n" + "\n".join(options_summary)
+        # Create user-friendly options list with clear labels
+        options_text = ""
+        for i, option in enumerate(choice_options, 1):
+            options_text += f"\nOption {chr(64 + i)} ({option['name']}): {option.get('reason', option.get('description', 'Database access'))}"
         
         choice_request = {
             "type": "agent_choice_required",
-            "prompt": prompt_text,
-            "reasoning": recommendation.get("reasoning", "Multiple suitable agents found - need clarification to proceed with the right data source"),
-            "options": enhanced_choice_options,
+            "prompt": f"I have detected multiple data sources for your query. Can you please tell me which one you are looking for?\n{options_text}\n\nPlease respond with your choice (like 'Option A', 'A', or 'Option A is the right one') or say 'none' if none of these are what you're looking for.",
+            "reasoning": recommendation.get("reasoning", "Multiple suitable agents found"),
+            "options": choice_options,
             "workflow_id": context.workflow_id,
             "step": context.current_step,
-            "allow_multiple": False,
+            "allow_multiple": False,  # For now, only single agent selection
             "context_summary": await self._prepare_context_summary(context),
-            "ambiguity_info": {
-                "query": context.original_query,
-                "matching_count": len(enhanced_choice_options),
-                "ambiguity_reason": recommendation.get("reasoning", ""),
-                "recommendation_confidence": recommendation.get("confidence", 0.0)
-            }
+            "cancellation_option": "none"  # Allow user to cancel if no option fits
         }
         
-        print(f"[EnhancedOrchestrator] Requesting user agent choice: {len(enhanced_choice_options)} enhanced options")
-        for i, option in enumerate(enhanced_choice_options):
-            print(f"[EnhancedOrchestrator] Option {i+1}: ID={option.get('id', 'N/A')}, Name={option.get('name', 'N/A')}, Region={option.get('region', 'N/A')}")
-        
-        print(f"[EnhancedOrchestrator] Choice request prompt: {choice_request['prompt']}")
+        print(f"[EnhancedOrchestrator] Requesting user agent choice: {len(choice_options)} options")
         
         workflow_streamer.emit_user_input_required(
             context.workflow_id, context.session_id, f"step_{context.current_step}_agent_choice",
             choice_request
         )
-    
-    def _extract_region_from_agent(self, agent: Dict[str, Any]) -> str:
-        """Extract geographical or business region from agent information."""
-        name = agent.get("name", "").lower()
-        description = agent.get("description", "").lower()
-        combined_text = f"{name} {description}"
-        
-        # Common region patterns
-        region_patterns = {
-            "us": ["us", "united states", "america", "usa"],
-            "canada": ["canada", "canadian", "ca"],
-            "latam": ["latam", "latin america", "south america", "mexico", "brazil"],
-            "europe": ["europe", "eu", "emea", "uk", "germany", "france"],
-            "asia": ["asia", "apac", "japan", "china", "india"],
-            "global": ["global", "worldwide", "international"]
-        }
-        
-        for region, patterns in region_patterns.items():
-            if any(pattern in combined_text for pattern in patterns):
-                return region.upper()
-        
-        return "Unknown Region"
-    
-    def _extract_region_from_name(self, name: str) -> str:
-        """Extract region from agent name."""
-        name_lower = name.lower()
-        
-        region_keywords = {
-            "US": ["us", "united states", "america", "usa"],
-            "Canada": ["canada", "canadian"],
-            "LATAM": ["latam", "latin", "mexico", "brazil"],
-            "Europe": ["europe", "eu", "uk", "emea"],
-            "Asia": ["asia", "apac", "japan", "china"],
-            "Global": ["global", "worldwide"]
-        }
-        
-        for region, keywords in region_keywords.items():
-            if any(keyword in name_lower for keyword in keywords):
-                return region
-        
-        return "Regional"
     
     async def _generate_final_result(self, context: WorkflowContext) -> Dict[str, Any]:
         """Generate comprehensive final result."""
@@ -1403,50 +1257,9 @@ class EnhancedOrchestrator:
         
         # Compile all data and generate final answer
         all_data = []
-        data_summaries = []
-        
         for result in context.agent_results:
-            if result.success:
-                # Handle different types of agent results
-                if "response_data" in result.data:
-                    # API response from application agents
-                    api_data = result.data.get("response_data", {})
-                    all_data.append({
-                        "agent_type": "application",
-                        "agent_name": result.agent_name,
-                        "request": result.query_executed,
-                        "response": api_data,
-                        "status_code": result.data.get("status_code")
-                    })
-                    data_summaries.append(f"API response from {result.agent_name}: {len(str(api_data))} chars")
-                elif "data" in result.data:
-                    # Database response from data agents
-                    db_data = result.data.get("data", [])
-                    if db_data:
-                        all_data.extend(db_data)
-                        data_summaries.append(f"Database query from {result.agent_name}: {len(db_data)} rows")
-                    else:
-                        data_summaries.append(f"Database query from {result.agent_name}: No data returned")
-                else:
-                    # Generic response handling - check if it's the direct result structure
-                    if hasattr(result.data, 'get'):
-                        raw_data = result.data.get("data", [])
-                        if raw_data:
-                            all_data.extend(raw_data)
-                            data_summaries.append(f"Data from {result.agent_name}: {len(raw_data)} rows")
-                        else:
-                            all_data.append({
-                                "agent_name": result.agent_name,
-                                "result_data": result.data,
-                                "row_count": result.data.get("row_count", 0)
-                            })
-                            data_summaries.append(f"Result from {result.agent_name}: {result.data.get('row_count', 0)} rows")
-                    else:
-                        all_data.append({
-                            "agent_name": result.agent_name,
-                            "data": result.data
-                        })
-                        data_summaries.append(f"Generic data from {result.agent_name}")
+            if result.success and result.data.get("data"):
+                all_data.extend(result.data["data"])
         
         context_summary = await self._prepare_context_summary(context)
         
@@ -1465,113 +1278,46 @@ class EnhancedOrchestrator:
         except Exception as e:
             execution_summary_json = str(context.get_execution_summary())
         
-        # Comprehensive data analysis - provide meaningful insights not just samples
         try:
-            if all_data:
-                # Generate comprehensive data analysis and statistics
-                data_analysis = await self._analyze_retrieved_data(all_data, context.original_query)
-                
-                # Also include sample data for context
-                sample_data = all_data[:3] if len(all_data) > 3 else all_data
-                
-                data_info = {
-                    "total_records": len(all_data),
-                    "data_sources": data_summaries,
-                    "data_analysis": data_analysis,
-                    "sample_records": sample_data,
-                    "data_structure": {
-                        "columns": list(all_data[0].keys()) if all_data and isinstance(all_data[0], dict) else [],
-                        "record_count": len(all_data)
-                    }
-                }
-                all_data_json = json.dumps(data_info, indent=2, default=json_serializer)
-            else:
-                all_data_json = json.dumps({
-                    "total_records": 0,
-                    "data_sources": data_summaries,
-                    "message": "No data retrieved from agents"
-                }, indent=2)
+            all_data_json = json.dumps(all_data[:100], indent=2, default=json_serializer)
         except Exception as e:
-            # Fallback: provide more data if analysis fails
-            try:
-                # Provide more substantial sample (50 records instead of 5)
-                substantial_sample = all_data[:50] if len(all_data) > 50 else all_data
-                data_info = {
-                    "total_records": len(all_data),
-                    "data_sources": data_summaries,
-                    "substantial_sample": substantial_sample,
-                    "columns": list(all_data[0].keys()) if all_data and isinstance(all_data[0], dict) else []
-                }
-                all_data_json = json.dumps(data_info, indent=2, default=json_serializer)
-            except:
-                all_data_json = f"[Data contains {len(all_data)} records from {len(data_summaries)} sources - {', '.join(data_summaries)}]"
+            all_data_json = f"[Data contains {len(all_data)} rows - JSON serialization skipped due to datetime objects]"
         
         try:
-            agent_results_summary = []
-            for r in context.agent_results:
-                if r.success:
-                    if "response_data" in r.data:
-                        # API response from application
-                        result_summary = {
-                            "agent": r.agent_name,
-                            "type": "application",
-                            "success": r.success,
-                            "status_code": r.data.get("status_code"),
-                            "request": r.query_executed,
-                            "response_size": len(str(r.data.get("response_data", {})))
-                        }
-                    else:
-                        # Database response from data agent
-                        result_summary = {
-                            "agent": r.agent_name,
-                            "type": "data_agent", 
-                            "success": r.success,
-                            "rows": r.data.get("row_count", 0),
-                            "query": r.query_executed
-                        }
-                else:
-                    result_summary = {
-                        "agent": r.agent_name,
-                        "success": r.success,
-                        "error": r.error
-                    }
-                agent_results_summary.append(result_summary)
-            
-            agent_results_json = json.dumps(agent_results_summary, indent=2, default=json_serializer)
+            agent_results_json = json.dumps([{
+                "agent": r.agent_name, 
+                "success": r.success,
+                "rows": r.data.get("row_count", 0) if r.success else 0,
+                "query": r.query_executed
+            } for r in context.agent_results], indent=2, default=json_serializer)
         except Exception as e:
             agent_results_json = f"[Agent results summary - {len(context.agent_results)} results processed]"
         
         prompt = f"""
-        You are providing a final answer to the user's question based on comprehensive data analysis results.
+        Generate a comprehensive final answer based on the multi-step analysis results.
         
-        User's Original Question: {context.original_query}
+        Original User Query: {context.original_query}
         
-        Data Analysis Results: {all_data_json}
+        Execution Summary: {execution_summary_json}
         
         Context: {context_summary}
         
-        Agent Execution Summary: {agent_results_json}
+        All Retrieved Data: {all_data_json}
+        
+        Agent Results: {agent_results_json}
         
         Instructions:
-        - Answer the user's question directly using the comprehensive data analysis provided
-        - The data_analysis section contains pre-calculated statistics, summaries, and insights from the FULL dataset
-        - Use the numeric_summary for totals, averages, min/max values
-        - Use the categorical_breakdown for top performers, regional data, product insights
-        - Use the date_ranges for time period analysis
-        - The sample_records are just for context - base your analysis on the comprehensive statistics
-        - For sales questions: focus on total amounts, top regions/products, date ranges
-        - Provide specific numbers and concrete insights from the analysis
-        - Write in a conversational, helpful tone that directly addresses what the user wants to know
-        - If substantial data was analyzed (check total_records), provide meaningful business insights
+        1. Provide a clear, comprehensive answer to the original question
+        2. Highlight key insights from the data
+        3. Mention methodology (which agents were used, what data was analyzed)
+        4. Include relevant statistics or trends if applicable
+        5. Be concise but informative
         
-        CRITICAL: Use the comprehensive data_analysis statistics rather than just the sample records. 
-        The analysis contains insights from the complete dataset of {len(all_data) if 'all_data' in locals() else 'X'} records.
-        
-        Provide a detailed, insightful response with specific findings from the full dataset analysis.
+        Format the response as a natural, user-friendly answer.
         """
         
         try:
-            final_answer = self.llm_client.invoke_with_text_response(prompt)
+            final_answer = self.ollama_client.invoke_with_text_response(prompt)
             
             workflow_streamer.emit_step_completed(
                 context.workflow_id, context.session_id, "final_generation",
@@ -1625,108 +1371,6 @@ class EnhancedOrchestrator:
             )
         
         return total_context
-
-    async def _analyze_retrieved_data(self, all_data: list, original_query: str) -> Dict[str, Any]:
-        """Analyze the full dataset to provide comprehensive insights for the LLM."""
-        try:
-            if not all_data or not isinstance(all_data, list):
-                return {"error": "No valid data to analyze"}
-            
-            analysis = {}
-            
-            # Basic data stats
-            analysis["total_records"] = len(all_data)
-            
-            # If data contains dictionaries (typical database rows)
-            if all_data and isinstance(all_data[0], dict):
-                analysis["columns"] = list(all_data[0].keys())
-                
-                # Analyze numeric columns for sales insights
-                numeric_insights = {}
-                date_insights = {}
-                categorical_insights = {}
-                
-                for record in all_data:
-                    for key, value in record.items():
-                        key_lower = key.lower()
-                        
-                        # Analyze numeric fields (sales, amounts, quantities, etc.)
-                        if isinstance(value, (int, float)) and value is not None:
-                            if key not in numeric_insights:
-                                numeric_insights[key] = {"values": [], "sum": 0, "count": 0}
-                            numeric_insights[key]["values"].append(value)
-                            numeric_insights[key]["sum"] += value
-                            numeric_insights[key]["count"] += 1
-                        
-                        # Analyze date fields
-                        elif isinstance(value, str) and any(date_term in key_lower for date_term in ['date', 'time', 'created', 'updated']):
-                            if key not in date_insights:
-                                date_insights[key] = {"values": set(), "count": 0}
-                            date_insights[key]["values"].add(value[:10] if len(value) > 10 else value)  # Extract date part
-                            date_insights[key]["count"] += 1
-                        
-                        # Analyze categorical fields (regions, products, customers, etc.)
-                        elif isinstance(value, str) and value:
-                            if key not in categorical_insights:
-                                categorical_insights[key] = {}
-                            categorical_insights[key][value] = categorical_insights[key].get(value, 0) + 1
-                
-                # Generate summaries
-                if numeric_insights:
-                    analysis["numeric_summary"] = {}
-                    for field, data in numeric_insights.items():
-                        values = data["values"]
-                        analysis["numeric_summary"][field] = {
-                            "total": data["sum"],
-                            "count": data["count"],
-                            "average": round(data["sum"] / data["count"], 2) if data["count"] > 0 else 0,
-                            "min": min(values) if values else 0,
-                            "max": max(values) if values else 0
-                        }
-                
-                if date_insights:
-                    analysis["date_ranges"] = {}
-                    for field, data in date_insights.items():
-                        sorted_dates = sorted(list(data["values"]))
-                        analysis["date_ranges"][field] = {
-                            "earliest": sorted_dates[0] if sorted_dates else None,
-                            "latest": sorted_dates[-1] if sorted_dates else None,
-                            "unique_dates": len(sorted_dates),
-                            "total_records": data["count"]
-                        }
-                
-                if categorical_insights:
-                    analysis["categorical_breakdown"] = {}
-                    for field, counts in categorical_insights.items():
-                        # Only include top categories to avoid overwhelming output
-                        top_items = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
-                        analysis["categorical_breakdown"][field] = {
-                            "unique_values": len(counts),
-                            "top_values": top_items,
-                            "total_records": sum(counts.values())
-                        }
-            
-            # Add contextual insights based on query type
-            if any(term in original_query.lower() for term in ['sales', 'revenue', 'amount', 'total']):
-                analysis["query_context"] = "sales_analysis"
-                analysis["recommended_focus"] = ["Look for total sales amounts", "Identify top performing items/regions", "Analyze date ranges and trends"]
-            elif any(term in original_query.lower() for term in ['customer', 'client', 'user']):
-                analysis["query_context"] = "customer_analysis"
-                analysis["recommended_focus"] = ["Customer distribution", "Customer activity patterns", "Regional customer breakdown"]
-            elif any(term in original_query.lower() for term in ['product', 'item', 'inventory']):
-                analysis["query_context"] = "product_analysis"
-                analysis["recommended_focus"] = ["Product performance", "Product categories", "Inventory levels"]
-            else:
-                analysis["query_context"] = "general_analysis"
-                analysis["recommended_focus"] = ["Data distribution patterns", "Key metrics and totals", "Date ranges and trends"]
-            
-            return analysis
-            
-        except Exception as e:
-            return {
-                "error": f"Analysis failed: {str(e)}",
-                "fallback_info": f"Dataset contains {len(all_data)} records"
-            }
 
     async def _analyze_request_complexity(self, context: WorkflowContext, agent_details: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze query complexity and determine if it needs special handling."""
@@ -1817,7 +1461,7 @@ class EnhancedOrchestrator:
         """
         
         try:
-            analysis = self.llm_client.invoke_with_json_response(prompt, timeout=300)
+            analysis = self.ollama_client.invoke_with_json_response(prompt, timeout=300)
             if not analysis:
                 # Default to proceed if analysis fails
                 analysis = {"action": "proceed", "complexity_score": 0.5, "reasoning": "Analysis inconclusive, proceeding with caution"}
@@ -1869,11 +1513,11 @@ class EnhancedOrchestrator:
                 "breakdown_strategy": breakdown_strategy
             }
         
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         column_reference = ""
         tables_data = agent_details.get('tables', [])
         if tables_data:
-            column_reference = llm_client._extract_column_reference_from_structured_data(tables_data)
+            column_reference = ollama_client._extract_column_reference_from_structured_data(tables_data)
         
         database_type = agent_details.get('database_type', 'unknown')
         agent_name = agent_details.get('name', 'Unknown')
@@ -1927,7 +1571,7 @@ class EnhancedOrchestrator:
         """
         
         try:
-            request_details = self.llm_client.invoke_with_json_response(prompt, timeout=600)
+            request_details = self.ollama_client.invoke_with_json_response(prompt, timeout=600)
             if not request_details:
                 # Fall back to single query
                 return await self._prepare_single_query_request(context, agent_details)
@@ -1960,11 +1604,11 @@ class EnhancedOrchestrator:
         sample_queries = agent_details.get('sample_queries', [])
         
         # Generate column reference from LLM client like in langgraph
-        from app.llm_client import llm_client
+        from app.ollama_client import ollama_client
         column_reference = ""
         tables_data = agent_details.get('tables', [])
         if tables_data:
-            column_reference = llm_client._extract_column_reference_from_structured_data(tables_data)
+            column_reference = ollama_client._extract_column_reference_from_structured_data(tables_data)
         else:
             column_reference = "⚠️  Use ONLY exact column names from the schema below"
         
@@ -2016,7 +1660,7 @@ class EnhancedOrchestrator:
         """
         
         try:
-            request_details = self.llm_client.invoke_with_json_response(prompt, timeout=600)
+            request_details = self.ollama_client.invoke_with_json_response(prompt, timeout=600)
             if not request_details:
                 raise Exception("No valid JSON response received from LLM")
             
@@ -2044,15 +1688,8 @@ class EnhancedOrchestrator:
         """Resume workflow after user makes a choice."""
         print(f"[EnhancedOrchestrator] Resuming workflow {workflow_id} with user choice: {user_choice}")
         
-        # Retrieve the stored workflow context
-        context = self.workflow_contexts.get(workflow_id)
-        if not context:
-            print(f"[EnhancedOrchestrator] Warning: No stored context found for workflow {workflow_id}")
-            return {
-                "status": "error",
-                "message": f"Workflow {workflow_id} not found or expired. Please start a new query."
-            }
-        
+        # For now, we'll implement a simplified version that continues with the chosen agent
+        # In a full implementation, you'd want to maintain workflow state across requests
         choice_type = user_choice.get("type")
         
         if choice_type == "agent_choice":
@@ -2061,150 +1698,149 @@ class EnhancedOrchestrator:
             
             print(f"[EnhancedOrchestrator] User chose agent: {chosen_agent_id}, message: '{user_message}'")
             
-            # Get the chosen agent details
-            available_agents = self.registry_manager.list_available_agents()
-            
-            # Find agent by ID (appKey or id field)
-            chosen_agent = None
-            for agent in available_agents:
-                if agent.get("appKey") == chosen_agent_id or agent.get("id") == chosen_agent_id:
-                    chosen_agent = agent
-                    break
-            
-            if not chosen_agent:
-                print(f"[EnhancedOrchestrator] Error: Agent {chosen_agent_id} not found in available agents")
+            # Check if user said "none" or equivalent cancellation
+            if self._is_cancellation_response(user_message):
                 return {
-                    "status": "error",
-                    "message": f"Selected agent {chosen_agent_id} not found"
+                    "status": "cancelled",
+                    "message": "Sorry, we couldn't help you with your request. None of the available data sources match what you're looking for.",
+                    "workflow_id": workflow_id,
+                    "session_id": session_id
                 }
             
-            print(f"[EnhancedOrchestrator] Found chosen agent: {chosen_agent.get('name')} (type: {chosen_agent.get('agent_type', 'data_agent')})")
+            # Parse natural language response to extract option choice
+            if not chosen_agent_id and user_message:
+                chosen_agent_id = self._parse_option_choice(user_message, user_choice.get("available_options", []))
             
-            # Continue the workflow with the chosen agent
-            try:
-                # Step 2: Select the chosen agent (skip LLM recommendation since user already chose)
-                workflow_streamer.emit_step_started(
-                    context.workflow_id, context.session_id, f"step_{context.current_step}_select",
-                    "agent_selection", f"🎯 Using user-selected agent: {chosen_agent['name']}..."
-                )
+            # Get the chosen agent details
+            available_agents = self.registry_manager.list_available_agents()
+            chosen_agent = next((a for a in available_agents if a["id"] == chosen_agent_id), None)
+            
+            if not chosen_agent:
+                return {
+                    "status": "error",
+                    "message": f"I couldn't identify which data source you selected from your response: '{user_message}'. Please try again with a clearer choice like 'Option A' or the name of the data source."
+                }
+            
+            # Create a simplified context for the chosen agent
+            # In a real implementation, you'd restore the full workflow context
+            simplified_context = WorkflowContext(
+                session_id=session_id,
+                workflow_id=workflow_id,
+                original_query=user_message or "User selected agent continuation",
+                conversation_history=[],
+                agent_results=[],
+                current_step=0
+            )
+            
+            # Execute just this agent with user's message
+            if user_message:
+                agent_request = await self._prepare_agent_request(simplified_context, chosen_agent)
+                execution_result = await self._execute_agent(simplified_context, chosen_agent, agent_request)
                 
-                # Step 3: Prepare agent request
-                agent_request = await self._prepare_agent_request(context, chosen_agent)
-                if not agent_request:
-                    return {
-                        "status": "error",
-                        "message": f"Failed to prepare request for {chosen_agent['name']}"
-                    }
-                
-                # Step 4: Execute the agent
-                execution_result = await self._execute_agent(context, chosen_agent, agent_request)
-                context.add_result(execution_result)
-                
-                # Update the stored context
-                self.workflow_contexts[workflow_id] = context
-                
-                # Step 5: Generate final result
-                final_result = await self._generate_final_result(context)
-                
-                # Clean up the workflow context after completion
-                if workflow_id in self.workflow_contexts:
-                    del self.workflow_contexts[workflow_id]
+                # Generate response based on the execution
+                final_result = await self._generate_single_agent_result(simplified_context, chosen_agent, execution_result, user_message)
                 
                 return {
                     "status": "completed",
                     "final_answer": final_result["final_answer"],
-                    "execution_summary": final_result.get("execution_summary", {}),
+                    "execution_summary": {
+                        "user_choice": True,
+                        "chosen_agent": chosen_agent["name"],
+                        "rows_retrieved": execution_result.data.get("row_count", 0) if execution_result.success else 0
+                    },
                     "workflow_id": workflow_id,
                     "session_id": session_id
                 }
-                
-            except Exception as e:
-                print(f"[EnhancedOrchestrator] Error continuing workflow: {str(e)}")
+            else:
                 return {
-                    "status": "error",
-                    "message": f"Error continuing workflow: {str(e)}"
+                    "status": "waiting_for_query",
+                    "message": f"Agent {chosen_agent['name']} selected. Please provide your specific query.",
+                    "chosen_agent": chosen_agent["name"]
                 }
                 
         elif choice_type == "user_input":
             user_input = user_choice.get("input", "")
             print(f"[EnhancedOrchestrator] User provided input: '{user_input}'")
             
-            # Add user input to context and continue workflow
-            context.conversation_history.append({
-                "role": "user",
-                "content": user_input,
-                "timestamp": time.time()
-            })
-            
-            # Update the stored context
-            self.workflow_contexts[workflow_id] = context
-            
-            # Continue the workflow loop from where it left off
-            try:
-                # Continue the main workflow loop
-                while context.current_step < context.max_steps:
-                    # Get next agent recommendation with updated context
-                    agent_recommendation = await self._get_agent_recommendation(context)
-                    
-                    if agent_recommendation.get("action") == "complete":
-                        break
-                    elif agent_recommendation.get("action") == "require_user_choice":
-                        await self._request_user_agent_choice(context, agent_recommendation)
-                        return {
-                            "status": "user_choice_required",
-                            "workflow_id": context.workflow_id,
-                            "session_id": context.session_id,
-                            "choice_options": agent_recommendation.get("user_choice_options", [])
-                        }
-                    elif agent_recommendation.get("action") == "require_user_input":
-                        await self._request_user_input(context, agent_recommendation)
-                        return {
-                            "status": "user_input_required",
-                            "workflow_id": context.workflow_id,
-                            "session_id": context.session_id
-                        }
-                    else:
-                        # Continue with agent execution
-                        selected_agent = await self._select_agent(context, agent_recommendation)
-                        if selected_agent:
-                            agent_request = await self._prepare_agent_request(context, selected_agent)
-                            execution_result = await self._execute_agent(context, selected_agent, agent_request)
-                            context.add_result(execution_result)
-                            
-                            # Update stored context
-                            self.workflow_contexts[workflow_id] = context
-                            
-                            # Decide next step
-                            decision = await self._evaluate_and_decide_next_step(context)
-                            if decision.get("action") == "complete":
-                                break
-                
-                # Generate final result
-                final_result = await self._generate_final_result(context)
-                
-                # Clean up workflow context
-                if workflow_id in self.workflow_contexts:
-                    del self.workflow_contexts[workflow_id]
-                
+            # Check if user wants to cancel
+            if self._is_cancellation_response(user_input):
                 return {
-                    "status": "completed",
-                    "final_answer": final_result["final_answer"],
-                    "execution_summary": final_result.get("execution_summary", {}),
+                    "status": "cancelled",
+                    "message": "Sorry, we couldn't help you with your request based on the information provided.",
                     "workflow_id": workflow_id,
                     "session_id": session_id
                 }
-                
-            except Exception as e:
-                print(f"[EnhancedOrchestrator] Error continuing workflow with user input: {str(e)}")
-                return {
-                    "status": "error", 
-                    "message": f"Error continuing workflow: {str(e)}"
-                }
+            
+            # Continue workflow with the user input
+            # This would require maintaining workflow state - for now return acknowledgment
+            return {
+                "status": "continued",
+                "message": f"Continuing workflow with your input: '{user_input}'",
+                "workflow_id": workflow_id
+            }
         
         return {
             "status": "error", 
             "message": "Invalid user choice type"
         }
+        
+    async def _generate_single_agent_result(self, context: WorkflowContext, agent: Dict[str, Any], execution_result, user_query: str) -> Dict[str, Any]:
+        """Generate result from a single agent execution after user choice."""
+        
+        if not execution_result.success:
+            return {
+                "final_answer": f"I encountered an error while querying {agent['name']}: {execution_result.error}",
+                "execution_summary": {"error": True, "agent": agent["name"]},
+                "workflow_id": context.workflow_id,
+                "session_id": context.session_id
+            }
+        
+        # Generate a response based on the single agent result
+        row_count = execution_result.data.get("row_count", 0)
+        data_sample = execution_result.data.get("data", [])[:5]  # First 5 rows for summary
+        
+        prompt = f"""
+        Generate a user-friendly response based on a single database query result.
+        
+        User Query: {user_query}
+        Database Agent: {agent['name']}
+        SQL Query: {execution_result.query_executed}
+        Rows Retrieved: {row_count}
+        Sample Data: {json.dumps(data_sample, indent=2, default=str)}
+        
+        Instructions:
+        1. Provide a clear, concise answer to the user's query
+        2. Mention the number of results found
+        3. Highlight key information from the sample data
+        4. Be conversational and helpful
+        
+        Format as a natural response to the user.
+        """
+        
+        try:
+            response = self.ollama_client.invoke_with_text_response(prompt)
+            return {
+                "final_answer": response,
+                "execution_summary": {
+                    "agent_used": agent["name"],
+                    "rows_retrieved": row_count,
+                    "query_executed": execution_result.query_executed
+                },
+                "workflow_id": context.workflow_id,
+                "session_id": context.session_id
+            }
+        except Exception as e:
+            return {
+                "final_answer": f"I found {row_count} results from {agent['name']}, but had trouble formatting the response. The data includes: {', '.join([str(item) for item in data_sample[:3]])}..." if row_count > 0 else f"No results found in {agent['name']} for your query.",
+                "execution_summary": {
+                    "agent_used": agent["name"], 
+                    "rows_retrieved": row_count,
+                    "formatting_error": str(e)
+                },
+                "workflow_id": context.workflow_id,
+                "session_id": context.session_id
+            }
+
 
 # Global instance
 enhanced_orchestrator = EnhancedOrchestrator()

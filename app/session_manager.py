@@ -2,7 +2,7 @@
 Session management for maintaining conversation context.
 """
 from typing import Dict, List, Optional, Tuple
-from app.llm_client import llm_client
+from app.ollama_client import ollama_client
 
 class SessionManager:
     """Manage session contexts and conversation history."""
@@ -60,7 +60,7 @@ class SessionManager:
         summary_prompt = f"/no_think\nSummarize the following conversation history for context, focusing on key facts, user goals, and important results.\n\n{summary_text}"
         
         print(f"[SessionManager] Summarizing history for session")
-        summary = llm_client.invoke_with_text_response(summary_prompt, allow_diagrams=False)
+        summary = ollama_client.invoke_with_text_response(summary_prompt, allow_diagrams=False)
         
         return summary, recent
     

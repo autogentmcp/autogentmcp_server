@@ -1,21 +1,22 @@
 """
-Unified LLM client factory supporting multiple providers (Ollama, DeepSeek).
+Unified LLM client factory supporting multiple providers (Ollama, DeepSeek, OpenAI).
 """
 import os
 from typing import Union, Dict, Any, Optional
 from .llm_client import LLMClient
 from .deepseek_client import DeepSeekClient
+from .openai_client import OpenAIClient
 
 class LLMClientFactory:
     """Factory for creating LLM clients based on configuration."""
     
     @staticmethod
-    def create_client(provider: str = "ollama", **kwargs) -> Union[LLMClient, DeepSeekClient]:
+    def create_client(provider: str = "ollama", **kwargs) -> Union[LLMClient, DeepSeekClient, OpenAIClient]:
         """
         Create an LLM client based on the provider.
         
         Args:
-            provider: The LLM provider ('ollama' or 'deepseek')
+            provider: The LLM provider ('ollama', 'deepseek', or 'openai')
             **kwargs: Provider-specific configuration
             
         Returns:
@@ -34,19 +35,46 @@ class LLMClientFactory:
             base_url = kwargs.get("base_url", "https://api.deepseek.com")
             return DeepSeekClient(model=model, api_key=api_key, base_url=base_url)
             
+        elif provider == "openai":
+            model = kwargs.get("model", "gpt-4o-mini")
+            api_key = kwargs.get("api_key")
+            base_url = kwargs.get("base_url", "https://api.openai.com/v1")
+            cert_file = kwargs.get("cert_file")
+            cert_key = kwargs.get("cert_key")
+            ca_bundle = kwargs.get("ca_bundle")
+            verify_ssl = kwargs.get("verify_ssl", True)
+            
+            if not api_key:
+                raise ValueError("OpenAI API key is required. Pass api_key parameter.")
+            
+            return OpenAIClient(
+                model=model, 
+                api_key=api_key, 
+                base_url=base_url,
+                cert_file=cert_file,
+                cert_key=cert_key,
+                ca_bundle=ca_bundle,
+                verify_ssl=verify_ssl
+            )
+            
         else:
-            raise ValueError(f"Unsupported LLM provider: {provider}. Supported providers: ollama, deepseek")
+            raise ValueError(f"Unsupported LLM provider: {provider}. Supported providers: ollama, deepseek, openai")
     
     @staticmethod
-    def create_from_env() -> Union[LLMClient, DeepSeekClient]:
+    def create_from_env() -> Union[LLMClient, DeepSeekClient, OpenAIClient]:
         """
         Create an LLM client based on environment variables.
         
         Environment Variables:
-            LLM_PROVIDER: 'ollama' or 'deepseek' (default: 'ollama')
+            LLM_PROVIDER: 'ollama', 'deepseek', or 'openai' (default: 'ollama')
             LLM_MODEL: Model name for the provider
             LLM_BASE_URL: Base URL for the provider
             DEEPSEEK_API_KEY: Required for DeepSeek provider
+            OPENAI_API_KEY: Required for OpenAI provider
+            OPENAI_CERT_FILE: Client certificate file (optional)
+            OPENAI_CERT_KEY: Private key file (optional)
+            OPENAI_CA_BUNDLE: CA bundle file (optional)
+            OPENAI_VERIFY_SSL: SSL verification (default: true)
             
         Returns:
             Configured LLM client instance
@@ -64,20 +92,39 @@ class LLMClientFactory:
             base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
             return DeepSeekClient(model=model, api_key=api_key, base_url=base_url)
             
+        elif provider == "openai":
+            model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+            api_key = os.getenv("OPENAI_API_KEY")
+            base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+            cert_file = os.getenv("OPENAI_CERT_FILE")
+            cert_key = os.getenv("OPENAI_CERT_KEY")
+            ca_bundle = os.getenv("OPENAI_CA_BUNDLE")
+            verify_ssl = os.getenv("OPENAI_VERIFY_SSL", "true").lower() == "true"
+            
+            return OpenAIClient(
+                model=model, 
+                api_key=api_key, 
+                base_url=base_url,
+                cert_file=cert_file,
+                cert_key=cert_key,
+                ca_bundle=ca_bundle,
+                verify_ssl=verify_ssl
+            )
+            
         else:
             raise ValueError(f"Unsupported LLM provider in environment: {provider}")
 
 # Global client instance - will be initialized based on environment
 llm_client = None
 
-def get_llm_client() -> Union[LLMClient, DeepSeekClient]:
+def get_llm_client() -> Union[LLMClient, DeepSeekClient, OpenAIClient]:
     """Get the global LLM client instance, creating it if necessary."""
     global llm_client
     if llm_client is None:
         llm_client = LLMClientFactory.create_from_env()
     return llm_client
 
-def set_llm_client(client: Union[LLMClient, DeepSeekClient]):
+def set_llm_client(client: Union[LLMClient, DeepSeekClient, OpenAIClient]):
     """Set the global LLM client instance."""
     global llm_client
     llm_client = client
