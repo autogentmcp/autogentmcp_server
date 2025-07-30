@@ -1,4 +1,4 @@
-from app.llm_client import llm_client
+from app.ollama_client import ollama_client
 from app.session_manager import session_manager
 from app.tool_selector import tool_selector
 from app.endpoint_invoker import endpoint_invoker
@@ -65,8 +65,8 @@ def _fallback_application_route(query: dict, session_id: str = "default") -> Dic
     )
     
     # Generate final answer
-    final_prompt = llm_client.create_final_answer_prompt(query["query"], call_result)
-    final_answer = llm_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
+    final_prompt = ollama_client.create_final_answer_prompt(query["query"], call_result)
+    final_answer = ollama_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
     
     # Update session
     session_manager.add_to_session(session_id, query["query"], final_answer)

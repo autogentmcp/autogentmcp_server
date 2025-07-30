@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 import uuid
 import json
 import asyncio
+import time
 
 from dotenv import load_dotenv
 
@@ -17,6 +18,8 @@ from app.vault_manager import vault_manager
 from app.registry_auth_integration import registry_auth_integration
 from app.data_agents_client import data_agents_client
 from app.langgraph_orchestrator import convert_decimals_to_float
+from app.orchestrator import simple_orchestrator
+from app.workflow_streamer import workflow_streamer
 
 load_dotenv()
 
@@ -306,8 +309,8 @@ def validate_agent_credentials_from_registry(app_key: str):
 @app.get("/test/llm")
 def test_llm_connection():
     """Test LLM connection and basic functionality."""
-    from app.llm_client import llm_client
-    return llm_client.test_connection()
+    from app.ollama_client import ollama_client
+    return ollama_client.test_connection()
 
 @app.get("/data-agents/list")
 def get_data_agents():
@@ -471,6 +474,7 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
         """Generate enhanced streaming response with multi-step orchestration."""
         client_id = str(uuid.uuid4())
         workflow_task = None
+        workflow_completed = False
         
         try:
             # Subscribe to workflow events
@@ -574,7 +578,8 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
                                 'message': final_message or '✅ Analysis completed successfully',
                                 'timestamp': time.time()
                             }, default=str)}\n\n"
-                            break  # End streaming on workflow completion
+                            # Don't break here - continue to get the final workflow result
+                            workflow_completed = True
                         
                         if step_info:
                             current_step = {
@@ -620,6 +625,11 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
                             
                     except json.JSONDecodeError:
                         continue
+                
+                # Check if we should exit the streaming loop
+                if workflow_completed and workflow_task and workflow_task.done():
+                    print(f"[DEBUG] Workflow completed and task done - exiting streaming loop")
+                    break
             
             # Get workflow result and check if user input is required
             if workflow_task.done() and not workflow_task.exception():
@@ -638,16 +648,31 @@ async def enhanced_orchestration_stream(request: WorkflowQueryRequest):
                         'timestamp': time.time()
                     }, default=str)}\n\n"
                 else:
-                    # Workflow completed normally
-                    yield f"data: {json.dumps({
+                    # Workflow completed normally - send complete result with available data
+                    response_data = {
                         'type': 'enhanced_completed',
-                        'final_answer': safe_result.get('final_answer'),
-                        'execution_summary': safe_result.get('execution_summary'),
-                        'agents_used': safe_result.get('agents_used', []),
-                        'total_data_points': safe_result.get('total_data_points', 0),
+                        'final_answer': safe_result.get('greeting') or safe_result.get('final_answer'),
+                        'greeting': safe_result.get('greeting'),  # Include both for compatibility
                         'workflow_type': 'enhanced_multi_step',
                         'timestamp': time.time()
-                    }, default=str)}\n\n"
+                    }
+                    
+                    # Only include visualization data if present (execution_complete path)
+                    if 'results' in safe_result:
+                        response_data.update({
+                            'execution_summary': safe_result.get('execution_summary'),
+                            'agents_used': safe_result.get('agents_used', []),
+                            'total_data_points': safe_result.get('total_data_points', 0),
+                            'results': safe_result.get('results', []),
+                            'visualization_ready': safe_result.get('visualization_ready', False),
+                            'data_summary': safe_result.get('data_summary', {})
+                        })
+                        print(f"[DEBUG] Sending enhanced_completed with {len(safe_result.get('results', []))} results")
+                    else:
+                        print(f"[DEBUG] Sending enhanced_completed without results - workflow_result keys: {list(safe_result.keys()) if safe_result else 'None'}")
+                    
+                    yield f"data: {json.dumps(response_data, default=str)}\n\n"
+                    print(f"[DEBUG] Enhanced_completed event sent successfully")
             elif workflow_task.cancelled():
                 print(f"[DEBUG] Workflow was cancelled")
             elif workflow_task.exception():
@@ -785,12 +810,24 @@ async def orchestration_query_stream(request: WorkflowQueryRequest):
                 final_result = await workflow_task
                 safe_result = convert_decimals_to_float(final_result)
                 
-                yield f"data: {json.dumps({
+                # Build response with available data
+                response_data = {
                     'type': 'completed',
-                    'final_answer': safe_result.get('final_answer'),
-                    'execution_summary': safe_result.get('execution_summary'),
+                    'final_answer': safe_result.get('greeting') or safe_result.get('final_answer'),
+                    'greeting': safe_result.get('greeting'),  # Include both for compatibility
                     'timestamp': time.time()
-                }, default=str)}\n\n"
+                }
+                
+                # Only include visualization data if present (execution_complete path)
+                if 'results' in safe_result:
+                    response_data.update({
+                        'execution_summary': safe_result.get('execution_summary'),
+                        'results': safe_result.get('results', []),
+                        'visualization_ready': safe_result.get('visualization_ready', False),
+                        'data_summary': safe_result.get('data_summary', {})
+                    })
+                
+                yield f"data: {json.dumps(response_data, default=str)}\n\n"
             
             yield f"data: {json.dumps({'type': 'stream_end', 'timestamp': time.time()}, default=str)}\n\n"
                 

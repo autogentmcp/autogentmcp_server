@@ -3,7 +3,7 @@ Unified router for both applications and data agents with confidence scoring.
 Enhanced with multi-agent orchestration support.
 """
 from typing import Dict, Any, List, Optional, Tuple
-from app.llm_client import llm_client
+from app.ollama_client import ollama_client
 from app.registry import fetch_agents_and_tools_from_registry
 from app.data_agents_client import data_agents_client
 import re
@@ -420,8 +420,8 @@ Just ask me anything in natural language, and I'll figure out the best way to he
             )
             
             # Generate final answer
-            final_prompt = llm_client.create_final_answer_prompt(query, call_result)
-            final_answer = llm_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
+            final_prompt = ollama_client.create_final_answer_prompt(query, call_result)
+            final_answer = ollama_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
             
             # Update session
             session_manager.add_to_session(session_id, query, final_answer)
@@ -514,8 +514,8 @@ Just ask me anything in natural language, and I'll figure out the best way to he
             
             # Generate final answer
             print("[DEBUG] Generating final answer with LLM")
-            final_prompt = llm_client.create_data_answer_prompt(query, sql_query, query_result)
-            final_answer = llm_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
+            final_prompt = ollama_client.create_data_answer_prompt(query, sql_query, query_result)
+            final_answer = ollama_client.invoke_with_text_response(final_prompt, allow_diagrams=True)
             
             if not final_answer:
                 print("[ERROR] No final answer generated from LLM")
@@ -573,7 +573,7 @@ Just ask me anything in natural language, and I'll figure out the best way to he
                     print(f"[DEBUG]   ... and {len(columns) - 5} more columns")
             
             # Use the enhanced SQL generation prompt with structured data
-            prompt = llm_client.create_sql_generation_prompt(
+            prompt = ollama_client.create_sql_generation_prompt(
                 user_query=query,
                 connection_type=connection_type,
                 tables_data=tables_data,  # Pass structured data directly
@@ -590,7 +590,7 @@ Just ask me anything in natural language, and I'll figure out the best way to he
             print(f"[DEBUG] Using {len(tables_data)} tables from structured data")
             
             # Use JSON response method for structured output
-            sql_response_json = llm_client.invoke_with_json_response(prompt)
+            sql_response_json = ollama_client.invoke_with_json_response(prompt)
             
             if not sql_response_json:
                 print("[ERROR] No JSON response from LLM")
@@ -624,7 +624,7 @@ Just ask me anything in natural language, and I'll figure out the best way to he
             # Fallback to text-based approach if JSON parsing fails
             try:
                 print("[DEBUG] Falling back to text-based SQL generation")
-                sql_response = llm_client.invoke_with_text_response(prompt)
+                sql_response = ollama_client.invoke_with_text_response(prompt)
                 
                 if not sql_response:
                     return None

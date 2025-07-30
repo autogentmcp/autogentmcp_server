@@ -6,7 +6,7 @@ Helps manage long-running conversations and context overflow.
 import json
 import time
 from typing import Dict, List, Any, Optional
-from app.llm_client import LLMClient
+from app.ollama_client import OllamaClient
 
 
 class ContextManager:
@@ -16,7 +16,7 @@ class ContextManager:
     """
     
     def __init__(self):
-        self.llm_client = LLMClient()
+        self.llm_client = OllamaClient()
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
         self.max_context_length = 4000  # Characters
         self.preserve_recent_messages = 3  # Always keep last N messages

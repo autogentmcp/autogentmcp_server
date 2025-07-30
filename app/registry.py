@@ -112,8 +112,14 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
             
             # Process data agents
             for data_agent in data_agents_data:
+                # Validate data_agent structure
+                if not isinstance(data_agent, dict):
+                    print(f"[Registry] WARNING: Expected dict but got {type(data_agent)}")
+                    continue
+                
                 agent_key = data_agent.get("id")  # Use 'id' as the key
                 if not agent_key:
+                    print(f"[Registry] WARNING: Data agent missing 'id' field: {data_agent}")
                     continue
                 
                 # Cache the full data agent response for later detailed access
@@ -121,18 +127,29 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
                 
                 # Extract connection information from environments
                 environments = data_agent.get("environments", [])
+                if not isinstance(environments, list):
+                    print(f"[Registry] WARNING: environments is not a list for agent {agent_key}: {type(environments)}")
+                    environments = []
+                
                 connection_info = {}
                 database_type = data_agent.get("connectionType", "unknown")
                 
                 # Get connection config from the first active environment
                 for env in environments:
+                    if not isinstance(env, dict):
+                        print(f"[Registry] WARNING: environment is not a dict for agent {agent_key}: {type(env)}")
+                        continue
                     if env.get("status") == "ACTIVE":
                         connection_info = env.get("connectionConfig", {})
                         break
                 
                 # If no active environment, use the first one
                 if not connection_info and environments:
-                    connection_info = environments[0].get("connectionConfig", {})
+                    first_env = environments[0]
+                    if isinstance(first_env, dict):
+                        connection_info = first_env.get("connectionConfig", {})
+                    else:
+                        print(f"[Registry] WARNING: First environment is not a dict for agent {agent_key}: {type(first_env)}")
                 
                 # Create data agent structure - capture ALL available data
                 agents[agent_key] = {
@@ -182,6 +199,8 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
                 
                 # Extract vault key from the active environment
                 for env in environments:
+                    if not isinstance(env, dict):
+                        continue
                     if env.get("status") == "ACTIVE":
                         # For data agents, vault key is directly in the environment
                         if env.get("vaultKey"):

@@ -23,6 +23,12 @@ class IntentAnalyzer:
         # Get all agents for context
         agents = fetch_agents_and_tools_from_registry()
         
+        print(f"[IntentAnalyzer] Found {len(agents)} agents in cache:")
+        for agent_id, agent in agents.items():
+            agent_type = agent.get("agent_type", "unknown")
+            name = agent.get("name", "Unknown")
+            print(f"  - {agent_id}: {name} ({agent_type})")
+        
         # Build simple agent list for LLM
         agent_list = []
         for agent_id, agent in agents.items():
@@ -35,6 +41,8 @@ class IntentAnalyzer:
                 }
                 agent_list.append(agent_info)
         
+        print(f"[IntentAnalyzer] Built agent list for LLM with {len(agent_list)} agents")
+        
         prompt = f"""
 You are a conversation state manager. Analyze the current user query in context and determine the appropriate next action.
 
@@ -44,6 +52,9 @@ Current Query: "{context.user_query}"
 
 Available Agents:
 {json.dumps(agent_list, indent=2)}
+
+DO NOT refer to anything other than above agents. Consider above agents your whole world. You can only entertain queries related to these agents and greetings.
+If the user is asking for general knowledge like where is something situated if you know you can answer it, otherwise you can say "I don't know" or "I can't help with that".
 
 INSTRUCTIONS:
 Analyze the conversation state and determine what should happen next. Consider:
