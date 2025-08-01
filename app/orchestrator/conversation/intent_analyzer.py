@@ -100,6 +100,11 @@ DECISION RULES:
 - **If previous agents succeeded for similar queries, prefer them → higher confidence for "execute"**
 - **If previous agents failed, avoid them or explain why trying again → mention in reasoning**
 
+EXECUTION STRATEGY RULES:
+- **single**: One agent can handle the request completely (e.g., "show sales data", "get inventory")
+- **sequential**: Multiple agents needed in order, where later agents depend on earlier results (e.g., "get sales data then analyze trends", "fetch inventory then calculate turnover")
+- **parallel**: Multiple independent agents for comprehensive analysis (e.g., "compare data across systems", "get both sales and inventory data")
+
 For clarification_response: extract the selected agent and use the ORIGINAL data request from history
 For execute: provide execution_plan with selected agent and query (consider previous agent success/failure)
 For ask_clarification: provide clarification_options with 2-4 relevant agents (mark previous usage status)
@@ -118,6 +123,13 @@ For ask_clarification: provide clarification_options with 2-4 relevant agents (m
             )
         
         print(f"[IntentAnalyzer] LLM decided action: {response.get('action')}, state: {response.get('conversation_state')}")
+        
+        # Debug execution plan
+        execution_plan = response.get("execution_plan")
+        if execution_plan:
+            strategy = execution_plan.get("strategy", "unknown")
+            agent_id = execution_plan.get("selected_agent_id", "none")
+            print(f"[IntentAnalyzer] Execution Strategy: {strategy}, Selected Agent: {agent_id}")
         
         return IntentAnalysisResult(
             conversation_state=response.get("conversation_state", "new_request"),

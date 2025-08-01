@@ -5,6 +5,10 @@ import time
 import threading
 from typing import Dict, Any, Optional, List
 from abc import ABC, abstractmethod
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from .utils.credential_processor import CredentialProcessor
 

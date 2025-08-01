@@ -474,6 +474,52 @@ def send_query_with_streaming(query: str, conversation_id: str = None, progress_
         st.session_state.is_processing = False
         return send_query_fallback(query, conversation_id)
 
+def render_agent_selection_ui(workflow_result: Dict[str, Any]) -> bool:
+    """
+    Render a user-friendly agent selection interface when clarification is needed.
+    Returns True if user made a selection, False otherwise.
+    """
+    user_interface = workflow_result.get("user_interface", {})
+    available_agents = workflow_result.get("available_agents", [])
+    
+    if user_interface.get("type") == "agent_selection" and available_agents:
+        st.markdown("### 🎯 Available Agents")
+        st.markdown("I found multiple agents that could help with your request. Please select the one that best fits your needs:")
+        
+        # Create a more visually appealing selection interface
+        options = user_interface.get("options", [])
+        
+        for i, option in enumerate(options):
+            agent_name = option.get("name", "Unknown Agent")
+            description = option.get("description", "No description available")
+            best_for = option.get("best_for", "")
+            confidence = option.get("recommendation_confidence", 0.5)
+            
+            # Create an expander for each agent option
+            with st.expander(f"🤖 {agent_name} {'⭐' if confidence > 0.7 else ''}", expanded=(i == 0 and confidence > 0.7)):
+                st.markdown(f"**Description:** {description}")
+                if best_for:
+                    st.markdown(f"**Best for:** {best_for}")
+                st.markdown(f"**Confidence:** {confidence:.1%}")
+                
+                # Add selection button
+                if st.button(f"Select {agent_name}", key=f"select_agent_{i}", type="primary" if confidence > 0.7 else "secondary"):
+                    # Store the selected agent choice
+                    st.session_state.agent_selection = {
+                        "selected_agent": agent_name,
+                        "agent_index": i,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    st.success(f"✅ Selected: **{agent_name}**")
+                    st.rerun()
+                    return True
+        
+        st.markdown("---")
+        st.info("💡 **Tip**: Click on an agent above to see more details, then use the 'Select' button to proceed.")
+        return False
+    
+    return False
+
 def render_workflow_progress(workflow_events: List[Dict[str, Any]], workflow_result: Dict[str, Any], is_current_session: bool = False):
     """Render detailed workflow progress in a collapsible section - SIMPLIFIED VERSION."""
     if not workflow_events:
@@ -912,7 +958,7 @@ def render_sidebar():
 
 def render_chat_interface():
     """Render the main chat interface."""
-    # Add ChatGPT-like styling
+    # Add ChatGPT-like styling with sticky footer
     st.markdown(
         """
         <style>
@@ -922,12 +968,35 @@ def render_chat_interface():
             background: transparent;
         }
         
-        /* Main container styling */
+        /* Root and body styling for full height */
+        html, body, #root {
+            height: 100vh;
+        }
+        
+        /* Main app container with flexbox */
+        .stApp {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        
+        /* Main container styling - flexible to push footer down */
         .main .block-container {
             max-width: 48rem;
             margin: 0 auto;
             padding: 1rem;
-            padding-bottom: 8rem;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: calc(100vh - 100px);
+        }
+        
+        /* Chat content area - grows to fill space */
+        .chat-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 70vh;
         }
         
         /* Chat message styling */
@@ -936,14 +1005,11 @@ def render_chat_interface():
             background: transparent;
         }
         
-        /* Fix input container styling - remove white background */
+        /* Fix input container styling */
         .stChatInput {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
+            position: relative;
             background: transparent;
-            padding: 1rem;
+            padding: 1rem 0;
             z-index: 999;
         }
         
@@ -1025,6 +1091,7 @@ def render_chat_interface():
     )
     
     # Custom title
+    st.markdown('<div class="chat-content">', unsafe_allow_html=True)
     st.markdown('<div class="chat-title">🚀 Enhanced MCP Assistant</div>', unsafe_allow_html=True)
     
     # Initialize session if needed
@@ -1208,9 +1275,23 @@ def render_chat_interface():
                 
                 print(f"[DEBUG] Displaying response: {response_text[:100]}...")
                 print(f"[DEBUG] Response length: {len(response_text)}")
+                print(f"[DEBUG] Workflow result status: {workflow_result.get('status', 'no_status')}")
                 
-                # Display the response directly (not in a separate container)
-                st.write(response_text)
+                # Check if this is an agent selection scenario
+                if (workflow_result.get("status") == "need_more_info" or 
+                    workflow_result.get("type") == "clarification_needed"):
+                    
+                    # Show the enhanced agent selection UI
+                    if render_agent_selection_ui(workflow_result):
+                        # User made a selection, continue processing
+                        print(f"[DEBUG] User selected agent: {st.session_state.get('agent_selection', {})}")
+                        # You can handle the selection here if needed
+                    else:
+                        # Still waiting for user selection, just display the basic message
+                        st.write(response_text)
+                else:
+                    # Normal response - display the response text
+                    st.write(response_text)
                 
                 # Enhanced visualization for data results
                 execution_results = workflow_result.get("results", [])
@@ -1310,6 +1391,9 @@ def render_chat_interface():
         # Temporarily disable rerun to test if it's causing the issue
         # if len(st.session_state.current_conversation_history) <= 2:  # User + Assistant message
         #     st.rerun()
+    
+    # Close chat-content div
+    st.markdown('</div>', unsafe_allow_html=True)
 
 def main():
     """Main application function."""
@@ -1323,14 +1407,6 @@ def main():
     # Render sidebar and main interface
     render_sidebar()
     render_chat_interface()
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "🚀 Enhanced MCP Assistant | "
-        "Powered by Multi-Agent Orchestration | "
-        f"Session: {st.session_state.current_session_id[:8] if st.session_state.current_session_id else 'Not initialized'}..."
-    )
 
 if __name__ == "__main__":
     main()
