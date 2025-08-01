@@ -51,9 +51,9 @@ def health():
     }
 
 @app.post("/query")
-def query_endpoint(request: QueryRequest):
+async def query_endpoint(request: QueryRequest):
     """Route a user query to the best agent/tool using LangGraph."""
-    return route_query({"query": request.query}, request.session_id)
+    return await route_query({"query": request.query}, request.session_id)
 
 @app.post("/sync_registry")
 def sync_registry_endpoint():

@@ -37,7 +37,7 @@ class AgentExecutor:
             agent_name = agent.get("name", agent_id)
             
             if agent_type == "data_agent":
-                return await self.data_agent_executor.execute_data_agent(agent_id, query)
+                return await self.data_agent_executor.execute_data_agent(agent_id, query, context)
             elif agent_type == "application":
                 return await self.application_agent_executor.execute_application_agent(agent_id, query)
             else:

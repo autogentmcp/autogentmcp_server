@@ -5,12 +5,12 @@ from app.endpoint_invoker import endpoint_invoker
 from app.unified_router import unified_router
 from typing import Dict, Any
 
-def route_query(query: dict, session_id: str = "default") -> Dict[str, Any]:
+async def route_query(query: dict, session_id: str = "default") -> Dict[str, Any]:
     """Route a user query to the best agent/tool using unified routing with confidence scoring."""
     
     # Use the new unified router that handles both applications and data agents
     try:
-        return unified_router.route_query(query["query"], session_id)
+        return await unified_router.route_query(query["query"], session_id)
     except Exception as e:
         print(f"[LangGraphRouter] Error in unified routing: {e}")
         # Fallback to original application-only routing

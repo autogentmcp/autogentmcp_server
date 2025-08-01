@@ -9,6 +9,10 @@ import json
 import re
 from typing import Dict, Any, Optional, AsyncGenerator
 from enum import Enum
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from app.ollama_client import OllamaClient
 from app.deepseek_client import DeepSeekClient
@@ -202,7 +206,21 @@ class MultiModeLLMClient:
             return client.invoke_with_json_response_sync(prompt, context, timeout)
         else:
             print(f"[MultiModeLLMClient] Using Ollama client for {task_type.value}")
-            return client.invoke_with_json_response(prompt, context, timeout)
+            # Ollama client is async, so we need to run it in sync mode
+            import asyncio
+            try:
+                # Try to get existing event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If we're already in an async context, we can't use run_until_complete
+                    # This shouldn't happen in normal operation, but we'll handle it
+                    print("[MultiModeLLMClient] Warning: Already in async context, Ollama call may fail")
+                    return None
+                else:
+                    return loop.run_until_complete(client.invoke_with_json_response(prompt, context, timeout))
+            except RuntimeError:
+                # No event loop exists, create a new one
+                return asyncio.run(client.invoke_with_json_response(prompt, context, timeout))
     
     def invoke_with_text_response(self, prompt: str, context: str = "",
                                 task_type: TaskType = TaskType.GENERAL,
@@ -364,3 +382,9 @@ def get_global_llm_client() -> MultiModeLLMClient:
     if _global_llm_client is None:
         _global_llm_client = MultiModeLLMClient()
     return _global_llm_client
+
+def reset_global_llm_client():
+    """Reset the global LLM client to force re-initialization with new config"""
+    global _global_llm_client
+    _global_llm_client = None
+    print("[MultiModeLLMClient] Global client reset - will be re-initialized with new config")

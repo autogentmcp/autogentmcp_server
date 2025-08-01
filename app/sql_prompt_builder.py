@@ -17,6 +17,10 @@ class SQLPromptBuilder:
 ## AVAILABLE SCHEMA:
 {schema}
 
+{business_context}
+
+{sample_queries}
+
 ## CRITICAL RULES:
 - ONLY use exact table names and column names from the schema above
 - Include schema prefix (e.g., "schema.table_name")
@@ -45,7 +49,9 @@ Generate the SQL now."""
                     schema: List[Dict[str, Any]], 
                     database_type: str = "unknown",
                     query_type: Optional[str] = None,
-                    custom_prompt: str = "") -> str:
+                    custom_prompt: str = "",
+                    sample_queries: Optional[List[str]] = None,
+                    business_context: str = "") -> str:
         """
         Build an optimized prompt based on query type and database
         
@@ -55,6 +61,8 @@ Generate the SQL now."""
             database_type: Target database type (bigquery, mssql, postgresql, etc.)
             query_type: Detected query type (simple, aggregation, trend, etc.)
             custom_prompt: Agent-specific custom guidelines and instructions
+            sample_queries: Example queries that work with this database
+            business_context: Business context and table descriptions
         """
         
         # Filter schema to only relevant tables
@@ -72,12 +80,27 @@ Generate the SQL now."""
         if custom_prompt and custom_prompt.strip():
             custom_prompt_section = f"\n## AGENT-SPECIFIC GUIDELINES:\n{custom_prompt.strip()}\n"
         
+        # Format business context section
+        business_context_section = ""
+        if business_context and business_context.strip():
+            business_context_section = f"\n## BUSINESS CONTEXT:\n{business_context.strip()}\n"
+        
+        # Format sample queries section
+        sample_queries_section = ""
+        if sample_queries and len(sample_queries) > 0:
+            sample_queries_section = "\n## EXAMPLE QUERIES:\n"
+            for i, example in enumerate(sample_queries[:5], 1):  # Limit to 5 examples
+                sample_queries_section += f"\n### Example {i}:\n{example.strip()}\n"
+            sample_queries_section += "\nUse these examples as reference for query patterns and structure.\n"
+        
         return self.base_prompt_template.format(
             query=query,
             schema=schema_json,
             dialect=database_type,
             specific_rules=specific_rules,
-            custom_prompt=custom_prompt_section
+            custom_prompt=custom_prompt_section,
+            business_context=business_context_section,
+            sample_queries=sample_queries_section
         )
     
     def _filter_relevant_schema(self, query: str, schema: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

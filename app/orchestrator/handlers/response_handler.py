@@ -75,19 +75,19 @@ class ResponseHandler:
         clarification_options = intent.clarification_options
         
         if clarification_options:
-            message += "\\n\\nAvailable options:"
+            message += "\n\nAvailable options:"
             for i, option in enumerate(clarification_options, 1):
                 agent_name = option.get("name", "Unknown Agent")
                 description = option.get("description", "No description available")
                 best_for = option.get("best_for", "")
                 
-                message += f"\\n{i}. **{agent_name}**"
-                message += f"\\n   - {description}"
+                message += f"\n{i}. **{agent_name}**"
+                message += f"\n   - {description}"
                 if best_for:
-                    message += f"\\n   - Best for: {best_for}"
-                message += "\\n"
+                    message += f"\n   - Best for: {best_for}"
+                message += "\n"
             
-            message += "\\nPlease let me know which option you'd prefer, or provide more specific details about what you're looking for."
+            message += "\nPlease let me know which option you'd prefer, or provide more specific details about what you're looking for."
         
         workflow_streamer.emit_workflow_completed(
             context.workflow_id, context.session_id,
@@ -106,8 +106,23 @@ class ResponseHandler:
         
         return {
             "greeting": message,
-            "status": "need_more_info",
+            "status": "need_more_info", 
             "clarification_needed": [f"Use {opt.get('name')}" for opt in clarification_options],
+            "available_agents": clarification_options,  # Structured data for better UI rendering
+            "user_interface": {
+                "type": "agent_selection",
+                "options": [
+                    {
+                        "id": i,
+                        "name": opt.get("name", "Unknown Agent"),
+                        "description": opt.get("description", "No description available"),
+                        "best_for": opt.get("best_for", ""),
+                        "capabilities": opt.get("capabilities", []),
+                        "recommendation_confidence": opt.get("confidence", 0.5)
+                    }
+                    for i, opt in enumerate(clarification_options, 1)
+                ]
+            },
             "type": "clarification_needed",
             "clarification_options": clarification_options
         }
@@ -175,7 +190,13 @@ class ResponseHandler:
             "results": execution_results,
             "agents_used": [{"agent_id": r.agent_id, "agent_name": r.agent_name} for r in successful_agents],
             "total_data_points": sum(r.row_count for r in successful_agents if r.row_count),
-            "visualization_ready": any(r.get("visualization", {}).get("output_format", []) != ["table"] for r in execution_results if r.get("success")),
+            "visualization_ready": any(
+                r.get("visualization", {}).get("output_format", []) != ["table"] 
+                or "chart" in str(r.get("query", "")).lower() 
+                or "trend" in str(r.get("query", "")).lower() 
+                for r in execution_results 
+                if r.get("success")
+            ),
             "data_summary": {
                 "total_agents": len(results),
                 "successful_agents": len(successful_agents),

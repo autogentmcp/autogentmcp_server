@@ -116,14 +116,8 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
             
             # Process data agents
             for data_agent in data_agents_data:
-                # Validate data_agent structure
-                if not isinstance(data_agent, dict):
-                    print(f"[Registry] WARNING: Expected dict but got {type(data_agent)}")
-                    continue
-                
                 agent_key = data_agent.get("id")  # Use 'id' as the key
                 if not agent_key:
-                    print(f"[Registry] WARNING: Data agent missing 'id' field: {data_agent}")
                     continue
                 
                 # Cache the full data agent response for later detailed access
@@ -131,29 +125,18 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
                 
                 # Extract connection information from environments
                 environments = data_agent.get("environments", [])
-                if not isinstance(environments, list):
-                    print(f"[Registry] WARNING: environments is not a list for agent {agent_key}: {type(environments)}")
-                    environments = []
-                
                 connection_info = {}
                 database_type = data_agent.get("connectionType", "unknown")
                 
                 # Get connection config from the first active environment
                 for env in environments:
-                    if not isinstance(env, dict):
-                        print(f"[Registry] WARNING: environment is not a dict for agent {agent_key}: {type(env)}")
-                        continue
                     if env.get("status") == "ACTIVE":
                         connection_info = env.get("connectionConfig", {})
                         break
                 
                 # If no active environment, use the first one
                 if not connection_info and environments:
-                    first_env = environments[0]
-                    if isinstance(first_env, dict):
-                        connection_info = first_env.get("connectionConfig", {})
-                    else:
-                        print(f"[Registry] WARNING: First environment is not a dict for agent {agent_key}: {type(first_env)}")
+                    connection_info = environments[0].get("connectionConfig", {})
                 
                 # Create data agent structure - capture ALL available data
                 agents[agent_key] = {
@@ -203,8 +186,6 @@ def fetch_agents_and_tools_from_registry(force_refresh=False):
                 
                 # Extract vault key from the active environment
                 for env in environments:
-                    if not isinstance(env, dict):
-                        continue
                     if env.get("status") == "ACTIVE":
                         # For data agents, vault key is directly in the environment
                         if env.get("vaultKey"):
@@ -343,7 +324,6 @@ def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any
                 "name": cached_details.get("name", enhanced_details.get("name", "")),
                 "description": cached_details.get("description", enhanced_details.get("description", "")),
                 "database_type": cached_details.get("connectionType", enhanced_details.get("database_type", "")),
-                "connection_type": cached_details.get("connectionType", enhanced_details.get("database_type", "")),  # Ensure connection_type is available
                 
                 # Security information from environment (correct location)
                 "vault_key": vault_key,
@@ -351,8 +331,7 @@ def get_enhanced_agent_details_for_llm(agent_key: str) -> Optional[Dict[str, Any
                 
                 # Rich schema information for LLM
                 "schema": "\n".join(schema_info_parts),
-                "tables": table_summaries,  # Summarized tables for display
-                "tables_with_columns": tables,  # Full table data with columns for LLM
+                "tables": table_summaries,
                 "table_relations": relations,
                 "sample_queries": sample_queries,
                 
@@ -396,20 +375,10 @@ def sync_registry():
     """Manually sync the registry cache and preload vault cache."""
     global _data_agent_details_cache
     
-    # Store current cache keys for comparison (don't clear yet)
-    old_cache_keys = set(_data_agent_details_cache["cache"].keys())
-    print(f"[Registry] Manual sync starting - current cache has {len(old_cache_keys)} entries")
+    # Clear the data agent details cache before refresh
+    _data_agent_details_cache["cache"].clear()
     
     agents = fetch_agents_and_tools_from_registry(force_refresh=True)
-    
-    # Now that new data is loaded, remove any stale entries
-    new_cache_keys = set(_data_agent_details_cache["cache"].keys())
-    stale_keys = old_cache_keys - new_cache_keys
-    if stale_keys:
-        print(f"[Registry] Removing {len(stale_keys)} stale cache entries: {list(stale_keys)[:3]}...")
-        for key in stale_keys:
-            _data_agent_details_cache["cache"].pop(key, None)
-    
     print(f"[Registry] Manual sync completed: {len(agents)} agents loaded")
     print(f"[Registry] Data agent details cache updated with {len(_data_agent_details_cache['cache'])} entries")
     
@@ -512,19 +481,10 @@ def _auto_reload_registry():
     """Background thread to auto-refresh the registry cache every ttl seconds."""
     while True:
         try:
-            # Store current cache keys for comparison (don't clear yet)
-            old_cache_keys = set(_data_agent_details_cache["cache"].keys())
+            # Clear the data agent details cache before refresh
+            _data_agent_details_cache["cache"].clear()
             
             agents = fetch_agents_and_tools_from_registry(force_refresh=True)
-            
-            # Now that new data is loaded, remove any stale entries
-            new_cache_keys = set(_data_agent_details_cache["cache"].keys())
-            stale_keys = old_cache_keys - new_cache_keys
-            if stale_keys:
-                print(f"[Registry] Auto-reload removing {len(stale_keys)} stale cache entries")
-                for key in stale_keys:
-                    _data_agent_details_cache["cache"].pop(key, None)
-            
             print(f"[Registry] Auto-reload completed: {len(agents)} agents loaded")
             print(f"[Registry] Data agent details cache updated with {len(_data_agent_details_cache['cache'])} entries")
             

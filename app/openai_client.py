@@ -8,6 +8,11 @@ import ssl
 import httpx
 from typing import Dict, Any, Optional, AsyncIterator
 from openai import AsyncOpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 from .base_llm_client import BaseLLMClient
 
 class OpenAIClient(BaseLLMClient):
