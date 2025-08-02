@@ -5,15 +5,15 @@ SQL generation with validation and safety checks
 from typing import Dict, List, Any
 from .validator import SQLValidator
 from ..models import ExecutionContext
-from app.multimode_llm_client import get_global_llm_client, TaskType
-from app.registry import get_enhanced_agent_details_for_llm
-from app.sql_prompt_builder import sql_prompt_builder
+from app.llm import MultiModeLLMClient
+from app.registry.client import get_enhanced_agent_details_for_llm
+from app.database.sql_prompt_builder import sql_prompt_builder
 
 class SQLGenerator:
     """Generates and validates SQL queries for data agents"""
     
     def __init__(self):
-        self.llm_client = get_global_llm_client()
+        self.llm_client = MultiModeLLMClient()
         self.validator = SQLValidator()
     
     async def generate_sql(self, agent_id: str, query: str) -> Dict[str, Any]:
@@ -106,7 +106,7 @@ class SQLGenerator:
             print(f"[SQLGenerator] Using custom prompt guidelines from environment")
         print(f"[SQLGenerator] Optimized Prompt Length: {len(prompt)} chars")
         
-        response = self.llm_client.invoke_with_json_response(prompt, task_type=TaskType.SQL_GENERATION)
+        response = self.llm_client.invoke_with_json_response(prompt, task_type="sql_generation")
         print(f"[SQLGenerator] DEBUG LLM response received: {response}")
         
         # Handle the structured response and validate SQL
@@ -246,7 +246,7 @@ class SQLGenerator:
         # Use SQL generation task type for better routing
         response = self.llm_client.invoke_with_json_response(
             prompt=prompt,
-            task_type=TaskType.SQL_GENERATION,
+            task_type="sql_generation",
             timeout=60
         )
         

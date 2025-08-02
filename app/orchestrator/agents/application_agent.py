@@ -5,18 +5,18 @@ Application agent execution with real API calls and vault-based authentication
 import json
 from typing import Dict, List, Any, Optional
 from ..models import AgentResult
-from app.registry import get_enhanced_agent_details_for_llm
-from app.multimode_llm_client import get_global_llm_client, TaskType
-from app.auth_handler import auth_handler
-from app.endpoint_invoker import endpoint_invoker
+from app.registry.client import get_enhanced_agent_details_for_llm
+from app.llm import MultiModeLLMClient
+from app.auth.auth_handler import AuthHandler
+from app.utils.endpoint_invoker import EndpointInvoker
 
 class ApplicationAgentExecutor:
     """Executes application agents with custom prompt support"""
     
     def __init__(self):
-        self.llm_client = get_global_llm_client()
-        self.auth_handler = auth_handler
-        self.endpoint_invoker = endpoint_invoker
+        self.llm_client = MultiModeLLMClient()
+        self.auth_handler = AuthHandler()
+        self.endpoint_invoker = EndpointInvoker()
     
     async def execute_application_agent(self, agent_id: str, query: str) -> AgentResult:
         """Execute application agent with real API calls"""
@@ -41,7 +41,7 @@ class ApplicationAgentExecutor:
                 )
             
             # Step 2: Make the actual API call
-            api_response = await self._make_api_call(api_call_params)
+            api_response = await self._make_api_call(api_call_params, agent_details)
             
             if not api_response.get("success"):
                 return AgentResult(
@@ -159,14 +159,14 @@ RULES:
 - Follow the endpoint specification exactly
 """
         
-        response = self.llm_client.invoke_with_json_response(prompt, task_type=TaskType.TOOL_SELECTION)
+        response = self.llm_client.invoke_with_json_response(prompt, task_type="tool_selection")
         
         if not response:
             return {"success": False, "error": "LLM failed to determine API call parameters"}
         
         return response
     
-    async def _make_api_call(self, api_params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _make_api_call(self, api_params: Dict[str, Any], agent_details: Dict[str, Any]) -> Dict[str, Any]:
         """Make the actual HTTP API call using endpoint invoker with vault authentication"""
         
         print(f"[ApplicationAgentExecutor] Making API call to {api_params.get('url')}")
@@ -180,24 +180,46 @@ RULES:
             if not url:
                 return {"success": False, "error": "No URL provided for API call"}
             
-            # Generate authentication headers using vault (with error handling)
+            # Get authentication method from agent details
+            security_config = agent_details.get("security", {})
+            auth_method = security_config.get("authMethod", "bearer_token")  # Default fallback
+            vault_key = security_config.get("vaultKey", "default_key")
+            
+            print(f"[ApplicationAgentExecutor] Using auth method: {auth_method}, vault key: {vault_key}")
+            
+            # Generate authentication headers using vault
             try:
-                auth_headers = self.auth_handler.generate_auth_headers_with_vault_key(vault_key="default_key")
+                auth_headers = self.auth_handler.generate_auth_headers_with_vault_key(
+                    vault_key=vault_key,
+                    authentication_method=auth_method,
+                    endpoint_url=url,
+                    request_method=method,
+                    request_body=json.dumps(payload) if payload else None
+                )
                 if auth_headers:
                     headers.update(auth_headers)
+                print(f"[ApplicationAgentExecutor] Auth headers generated successfully: {list(auth_headers.keys())}")
             except Exception as auth_error:
                 print(f"[ApplicationAgentExecutor] Auth header generation failed: {str(auth_error)}")
                 # Continue without auth headers
             
-            # Prepare parameters for endpoint invoker
-            agent_info = {"security": {}}
+            # Prepare parameters for endpoint invoker using agent registry details
+            agent_info = {
+                "security": security_config,
+                "name": agent_details.get("name", "unknown"),
+                "description": agent_details.get("description", "")
+            }
             tool_info = {
                 "query_params": {},
                 "body_params": payload if payload else {},
-                "headers": {}
+                "headers": headers,
+                "endpoint_selected": api_params.get("endpoint_selected", ""),
+                "reasoning": api_params.get("reasoning", "")
             }
             
             print(f"[ApplicationAgentExecutor] Calling endpoint invoker for {method} {url}")
+            print(f"[ApplicationAgentExecutor] Headers: {list(headers.keys())}")
+            print(f"[ApplicationAgentExecutor] Payload: {payload}")
             
             # Make the API call using endpoint invoker (synchronous)
             response = self.endpoint_invoker.invoke_registry_endpoint(
@@ -215,6 +237,10 @@ RULES:
             
             if response is None:
                 return {"success": False, "error": "Endpoint invoker returned None"}
+            
+            # For simulated responses, return directly
+            if isinstance(response, dict) and "success" in response:
+                return response
             
             # Process the response from endpoint invoker
             return self._process_endpoint_response(response)

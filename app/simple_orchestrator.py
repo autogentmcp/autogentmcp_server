@@ -15,10 +15,10 @@ import uuid
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 
-from app.workflow_streamer import workflow_streamer
-from app.llm_client import LLMClient
-from app.registry import fetch_agents_and_tools_from_registry, get_enhanced_agent_details_for_llm
-from app.database_query_executor import DatabaseQueryExecutor
+from app.workflows.workflow_streamer import workflow_streamer
+from app.llm import MultiModeLLMClient
+from app.registry.client import fetch_agents_and_tools_from_registry, get_enhanced_agent_details_for_llm
+from app.database.database_query_executor import DatabaseQueryExecutor
 
 @dataclass
 class ExecutionContext:
@@ -33,7 +33,7 @@ class SimpleOrchestrator:
     """Simple orchestrator with one clean workflow"""
     
     def __init__(self):
-        self.llm_client = LLMClient()
+        self.llm_client = MultiModeLLMClient()
         self.db_executor = DatabaseQueryExecutor()
         self._conversation_memory = {}  # Enhanced conversation storage
         self._conversation_summaries = {}  # Rolling summaries of older conversations

@@ -5,14 +5,14 @@ Intent analysis and conversation state management
 import json
 from typing import Dict, List, Any
 from ..models import ExecutionContext, IntentAnalysisResult
-from app.multimode_llm_client import get_global_llm_client, TaskType
+from app.llm import MultiModeLLMClient
 from app.registry import fetch_agents_and_tools_from_registry
 
 class IntentAnalyzer:
     """Analyzes user intent and manages conversation state"""
     
     def __init__(self):
-        self.llm_client = get_global_llm_client()
+        self.llm_client = MultiModeLLMClient()
     
     async def analyze_intent(self, context: ExecutionContext, conversation_context: str) -> IntentAnalysisResult:
         """Analyze intent with LLM-driven conversation state management"""
@@ -111,7 +111,7 @@ For ask_clarification: provide clarification_options with 2-4 relevant agents (m
 """
         
         print(f"[IntentAnalyzer] Sending prompt to LLM")
-        response = self.llm_client.invoke_with_json_response(prompt, task_type=TaskType.INTENT_ANALYSIS)
+        response = self.llm_client.invoke_with_json_response(prompt, task_type="intent_analysis")
         
         if not response:
             return IntentAnalysisResult(

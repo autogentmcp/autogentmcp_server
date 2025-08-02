@@ -1,0 +1,49 @@
+{
+  "enabled_providers": [
+    "openai"
+  ],
+  "provider_configs": {
+    "openai": {
+      "enabled": true,
+      "default_model": "gpt-4o-mini",
+      "required_env_vars": ["OPENAI_API_KEY"],
+      "description": "OpenAI GPT models"
+    },
+    "deepseek": {
+      "enabled": false,
+      "default_model": "deepseek-chat", 
+      "required_env_vars": ["DEEPSEEK_API_KEY"],
+      "description": "DeepSeek models"
+    },
+    "ollama": {
+      "enabled": false,
+      "default_model": "qwen2.5:32b",
+      "required_env_vars": [],
+      "description": "Local Ollama models"
+    }
+  },
+  "task_routing": {
+    "code_generation": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    },
+    "data_analysis": {
+      "provider": "openai", 
+      "model": "gpt-4o-mini"
+    },
+    "general_chat": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    },
+    "tool_selection": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    },
+    "agent_selection": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    }
+  },
+  "fallback_provider": "openai",
+  "allow_disabled_fallback": false
+}
