@@ -483,7 +483,7 @@ Respond with JSON:
             }
     
     async def _generate_sql(self, agent_id: str, query: str) -> str:
-        """Generate SQL for data agent with database-specific optimizations"""
+        """Generate SQL for data agent with comprehensive context including agent description, table descriptions, and sample queries"""
         # Get agent schema info
         agent_details = get_enhanced_agent_details_for_llm(agent_id)
         
@@ -491,17 +491,47 @@ Respond with JSON:
         database_type = agent_details.get("database_type", "unknown")
         connection_type = agent_details.get("connection_type", "unknown")
         
-        # Create detailed schema summary
+        # Extract business context and agent description
+        agent_name = agent_details.get("name", "Unknown Agent")
+        agent_description = agent_details.get("description", "")
+        business_context = agent_details.get("business_context", "")
+        
+        # Get custom prompt from environment configuration
+        custom_prompt = ""
+        environments = agent_details.get("environments", [])
+        if environments:
+            # Find the active environment or use the first one
+            active_env = next((env for env in environments if env.get("status") == "ACTIVE"), environments[0] if environments else None)
+            if active_env:
+                custom_prompt = active_env.get("customPrompt", "")
+        
+        # Create comprehensive context for SQL generation
+        context_text = f"AGENT CONTEXT:\n"
+        context_text += f"Agent: {agent_name}\n"
+        if agent_description:
+            context_text += f"Purpose: {agent_description}\n"
+        if business_context and business_context != agent_description:
+            context_text += f"Business Context: {business_context}\n"
+        if custom_prompt:
+            context_text += f"Custom Instructions: {custom_prompt}\n"
+        context_text += f"Database Type: {database_type}/{connection_type}\n\n"
+        
+        # Create detailed schema summary with table descriptions
         tables = agent_details.get("tables_with_columns", [])
-        schema_text = f"Database: {agent_details.get('name')} (Type: {database_type}/{connection_type})\n\n"
+        schema_text = "DATABASE SCHEMA:\n"
         
         for table in tables[:10]:  # Limit tables to prevent token overflow
             table_name = table.get('tableName')
             schema_name = table.get('schemaName', 'dbo')
+            description = table.get('description', '')
             row_count = table.get('rowCount', 0)
             
             full_table_name = f"{schema_name}.{table_name}" if schema_name != "public" else table_name
-            schema_text += f"Table: {full_table_name} ({row_count:,} rows)\n"
+            schema_text += f"\nTable: {full_table_name} ({row_count:,} rows)\n"
+            
+            # Add table description if available
+            if description:
+                schema_text += f"Description: {description}\n"
             
             columns = table.get("columns", [])[:15]  # Show more columns for better context
             for col in columns:
@@ -520,6 +550,14 @@ Respond with JSON:
             if len(table.get("columns", [])) > 15:
                 schema_text += f"  ... and {len(table.get('columns', [])) - 15} more columns\n"
             schema_text += "\n"
+        
+        # Add sample queries if available
+        # sample_queries = agent_details.get("sample_queries", [])
+        # examples_text = ""
+        # if sample_queries:
+        #     examples_text = "SAMPLE QUERIES FOR REFERENCE:\n"
+        #     for i, query_example in enumerate(sample_queries[:3], 1):  # Show up to 3 examples
+        #         examples_text += f"Example {i}:\n{query_example}\n\n"
         
         # Database-specific instructions
         db_instructions = ""
@@ -547,28 +585,44 @@ DATABASE-SPECIFIC NOTES for PostgreSQL:
 - Date functions: NOW(), EXTRACT(), AGE()
 - String functions: LENGTH(), SUBSTRING(), CONCAT()
 """
+        elif database_type.lower() in ["bigquery"]:
+            db_instructions = """
+DATABASE-SPECIFIC NOTES for BigQuery:
+- Use LIMIT for row limiting: SELECT columns FROM table LIMIT 10
+- Use backticks for table references: `project.dataset.table`
+- Date functions: CURRENT_DATE(), DATE_SUB(), DATE_TRUNC()
+- String functions: LENGTH(), SUBSTR(), CONCAT()
+- Aggregation: Use GROUP BY with aggregate functions
+"""
         
         prompt = f"""
 Generate an efficient SQL query for this request: "{query}"
 
+{context_text}
+
 {schema_text}
+
+{examples_text}
 
 {db_instructions}
 
 QUERY OPTIMIZATION GUIDELINES:
-1. Always limit results to a reasonable number (TOP 10-50 for most queries)
-2. Use specific column names, avoid SELECT *
-3. Add ORDER BY clauses for meaningful sorting
-4. Use WHERE clauses to filter data when possible
-5. For aggregations, include GROUP BY appropriately
-6. Use proper table aliases for joins
-7. Consider performance - avoid full table scans when possible
+1. **Context Awareness**: Use the agent's business context to understand the domain and purpose
+2. **Table Descriptions**: Leverage table descriptions to understand what data each table contains
+3. **Sample Queries**: Reference the provided examples for query patterns and best practices
+4. **Column Selection**: Use specific column names based on the schema, avoid SELECT *
+5. **Result Limiting**: Always limit results to a reasonable number (TOP 10-50 for most queries)
+6. **Meaningful Sorting**: Add ORDER BY clauses for logical data presentation
+7. **Efficient Filtering**: Use WHERE clauses to filter data when possible
+8. **Proper Joins**: Use table relationships shown in the schema for joins
+9. **Data Types**: Consider column data types when writing conditions
+10. **Business Logic**: Apply domain knowledge from the agent description
 
 RESPONSE FORMAT:
 - Return ONLY the SQL query, no explanation
 - Make it executable and syntactically correct
 - Focus on answering the user's question efficiently
-- Limit results to understand patterns with fewer records
+- Use the business context to make intelligent assumptions about what data to retrieve
 """
         
         response = self.llm_client.invoke(prompt)
