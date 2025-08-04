@@ -209,6 +209,26 @@ class OllamaClient(BaseLLMClient):
                 "model": self.model,
                 "base_url": self.base_url
             }
+    
+    async def generate_response(self, messages: list, **kwargs) -> str:
+        """Generate response from messages using Ollama."""
+        try:
+            # Convert messages to a single prompt if needed
+            if isinstance(messages, list) and len(messages) > 0:
+                if isinstance(messages[0], dict) and 'content' in messages[0]:
+                    # Extract content from message format
+                    prompt = messages[-1]['content']  # Use the last message as prompt
+                else:
+                    prompt = str(messages[0])
+            else:
+                prompt = str(messages)
+            
+            # Use the existing text response method
+            return await self.invoke_with_text_response(prompt, "")
+            
+        except Exception as e:
+            print(f"[OllamaClient] Generate response failed: {e}")
+            return f"Error generating response: {str(e)}"
 
 
 # Global Ollama client instance

@@ -131,14 +131,34 @@ class ResponseHandler:
                                       results: List[AgentResult], strategy: str) -> Dict[str, Any]:
         """Handle completed execution"""
         
-        # Generate final response
-        final_response = await self._generate_final_response(context, results)
+        print(f"[ResponseHandler] Starting handle_execution_complete with {len(results)} results")
         
-        workflow_streamer.emit_workflow_completed(
-            context.workflow_id, context.session_id,
-            final_answer=final_response,
-            execution_time=2.0
-        )
+        try:
+            # Generate final response
+            final_response = await self._generate_final_response(context, results)
+            print(f"[ResponseHandler] Final response generated: {len(final_response)} characters")
+            
+            # Emit workflow completed event
+            workflow_streamer.emit_workflow_completed(
+                context.workflow_id, context.session_id,
+                final_answer=final_response,
+                execution_time=2.0
+            )
+            print(f"[ResponseHandler] Workflow completed event emitted")
+            
+        except Exception as e:
+            print(f"[ResponseHandler] ERROR in handle_execution_complete: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Emit error completion
+            error_message = f"I encountered an error while processing your request: {str(e)}"
+            workflow_streamer.emit_workflow_completed(
+                context.workflow_id, context.session_id,
+                final_answer=error_message,
+                execution_time=1.0
+            )
+            final_response = error_message
         
         # Convert AgentResult objects to dicts for storage
         execution_results = []
@@ -444,6 +464,14 @@ Generate a response that gives the user valuable, actionable insights they can i
 """
             
             print(f"[ResponseHandler] Making final LLM call for data analysis with {total_rows} total records")
+            
+            # Emit progress indicator to keep connection alive during LLM processing
+            from app.workflows.workflow_streamer import workflow_streamer
+            workflow_streamer.emit_progress_update(
+                context.workflow_id, context.session_id,
+                90, "Generating comprehensive analysis..."
+            )
+            
             print(f"[ResponseHandler] Prompt preview: {prompt[:200]}...")
             
             try:

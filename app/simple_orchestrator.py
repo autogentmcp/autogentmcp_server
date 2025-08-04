@@ -438,10 +438,15 @@ Respond with JSON:
                 # Generate SQL and execute
                 sql_query = await self._generate_sql(agent_id, query)
                 
+                # Get connection config from registry for BigQuery project override
+                connection_config = agent_details.get("connection_info", {})
+                print(f"[SimpleOrchestrator] Using connection config from registry: {connection_config}")
+                
                 result = self.db_executor.execute_query(
                     agent_details.get("vault_key"),
                     agent_details.get("connection_type", "mssql"),
-                    sql_query
+                    sql_query,
+                    connection_config=connection_config
                 )
                 
                 if result.get("status") == "success":

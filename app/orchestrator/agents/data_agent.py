@@ -35,9 +35,10 @@ class DataAgentExecutor:
             if context and hasattr(context, 'workflow_streamer'):
                 context.workflow_streamer.emit_step_started(
                     context.workflow_id, 
+                    context.session_id,
                     "table_selection", 
-                    "📋 Analyzing relevant tables", 
-                    context.session_id
+                    "table_selection",
+                    "📋 Analyzing relevant tables"
                 )
             
             relevant_tables = await self._select_relevant_tables(agent_id, query)
@@ -45,9 +46,10 @@ class DataAgentExecutor:
             if context and hasattr(context, 'workflow_streamer'):
                 context.workflow_streamer.emit_step_completed(
                     context.workflow_id, 
-                    "table_selection", 
                     context.session_id,
-                    execution_time=1.0
+                    "table_selection", 
+                    "table_selection",
+                    1.0
                 )
             
             if not relevant_tables:
@@ -66,9 +68,10 @@ class DataAgentExecutor:
             if context and hasattr(context, 'workflow_streamer'):
                 context.workflow_streamer.emit_step_started(
                     context.workflow_id, 
+                    context.session_id,
                     "sql_generation", 
-                    "🔧 Generating SQL query", 
-                    context.session_id
+                    "sql_generation",
+                    "🔧 Generating SQL query"
                 )
             
             sql_result = await self.sql_generator.generate_sql_with_filtered_tables(agent_id, query, relevant_tables)
@@ -76,9 +79,10 @@ class DataAgentExecutor:
             if context and hasattr(context, 'workflow_streamer'):
                 context.workflow_streamer.emit_step_completed(
                     context.workflow_id, 
-                    "sql_generation", 
                     context.session_id,
-                    execution_time=2.0
+                    "sql_generation", 
+                    "sql_generation",
+                    2.0
                 )
             
             # Check if SQL generation was successful
@@ -129,11 +133,35 @@ class DataAgentExecutor:
             
             print(f"[DataAgentExecutor] Executing SQL query: {sql_query[:200]}...")
             
+            # Emit SQL generated event with details
+            if context and hasattr(context, 'workflow_streamer') and context.workflow_streamer:
+                context.workflow_streamer.emit_sql_generated(
+                    context.workflow_id,
+                    context.session_id,
+                    sql_query,
+                    agent_details.get("connection_type", "unknown"),
+                    sql_result.get("reasoning", "")
+                )
+            
+            # Get connection config from registry for BigQuery project override
+            connection_config = agent_details.get("connection_info", {})
+            print(f"[DataAgentExecutor] Using connection config from registry: {connection_config}")
+            
+            # Emit query execution event
+            if context and hasattr(context, 'workflow_streamer') and context.workflow_streamer:
+                context.workflow_streamer.emit_query_execution(
+                    context.workflow_id,
+                    context.session_id,
+                    agent_details.get("connection_type", "unknown"),
+                    sql_query[:200]
+                )
+            
             # Execute the validated SQL query
             result = self.db_executor.execute_query(
                 agent_details.get("vault_key"),
                 agent_details.get("connection_type", "unknown"),
-                sql_query
+                sql_query,
+                connection_config=connection_config
             )
             
             if result.get("status") == "success":
@@ -141,6 +169,16 @@ class DataAgentExecutor:
                 row_count = len(data)
                 
                 print(f"[DataAgentExecutor] Query executed successfully: {row_count} rows")
+                
+                # Emit query results event
+                if context and hasattr(context, 'workflow_streamer') and context.workflow_streamer:
+                    context.workflow_streamer.emit_query_results(
+                        context.workflow_id,
+                        context.session_id,
+                        agent_details.get("connection_type", "unknown"),
+                        row_count
+                    )
+                
                 print(f"[DataAgentExecutor] DEBUG sql_result visualization: {sql_result.get('output_format', 'MISSING')}, chart_spec: {sql_result.get('chart_spec', 'MISSING')}")
                 
                 # Enhanced chart visualization for trend/chart queries

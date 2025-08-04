@@ -457,6 +457,33 @@ class OpenAIClient(BaseLLMClient):
             print(f"[OpenAIClient] Text invocation failed: {e}")
             raise Exception(f"OpenAI text call failed: {str(e)}")
     
+    async def generate_response(self, messages: list, **kwargs) -> str:
+        """Generate response from messages using OpenAI chat completion."""
+        try:
+            # Convert messages to a single prompt if needed
+            if isinstance(messages, list) and len(messages) > 0:
+                if isinstance(messages[0], dict) and 'content' in messages[0]:
+                    # Extract content from message format
+                    prompt = messages[-1]['content']  # Use the last message as prompt
+                else:
+                    prompt = str(messages[0])
+            else:
+                prompt = str(messages)
+            
+            # Filter kwargs to only include supported parameters
+            supported_params = {}
+            if 'context' in kwargs:
+                supported_params['context'] = kwargs['context']
+            if 'allow_diagrams' in kwargs:
+                supported_params['allow_diagrams'] = kwargs['allow_diagrams']
+            
+            # Use the existing text response method with filtered parameters
+            return await self.invoke_with_text_response(prompt, **supported_params)
+            
+        except Exception as e:
+            print(f"[OpenAIClient] Generate response failed: {e}")
+            raise Exception(f"OpenAI generate response failed: {str(e)}")
+    
     # Synchronous versions for compatibility
     
     def invoke_with_json_response_sync(self, prompt: str, context: str = "", timeout: int = 600) -> Optional[Dict[str, Any]]:

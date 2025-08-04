@@ -15,6 +15,7 @@ class ExecutionContext:
     user_query: str
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
     results: List[Dict[str, Any]] = field(default_factory=list)
+    workflow_streamer: Optional[Any] = None  # Reference to workflow streamer for events
 
 @dataclass
 class AgentResult:

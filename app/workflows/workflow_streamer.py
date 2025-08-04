@@ -31,6 +31,14 @@ class EventType(Enum):
     AGGREGATION = "aggregation"
     ROUTE_SELECTED = "route_selected"
     SQL_GENERATED = "sql_generated"
+    
+    # Enhanced event types for detailed streaming
+    AGENT_STARTED = "agent_started"
+    PAYLOAD_GENERATION = "payload_generation"
+    API_CALL = "api_call"
+    SERVICE_RESPONSE = "service_response"
+    QUERY_EXECUTION = "query_execution"
+    QUERY_RESULTS = "query_results"
 
 @dataclass
 class StreamEvent:
@@ -189,6 +197,12 @@ class WorkflowStreamer:
         Args:
             event: Event to emit
         """
+        # Add debug logging for detailed events
+        event_type_str = event.event_type.value if hasattr(event.event_type, 'value') else str(event.event_type)
+        if event_type_str in ['agent_started', 'payload_generation', 'api_call', 'service_response', 'query_execution', 'query_results', 'step_started', 'step_completed']:
+            print(f"[WorkflowStreamer] Emitting detailed event: {event_type_str}, workflow_id: {event.workflow_id}, session_id: {event.session_id}")
+            print(f"[WorkflowStreamer] Event data keys: {list(event.data.keys()) if event.data else 'no_data'}")
+        
         with self._lock:
             # Buffer the event
             if event.workflow_id not in self.event_buffer:
@@ -212,10 +226,12 @@ class WorkflowStreamer:
             # Send to session-specific clients
             if event.session_id:
                 session_clients = self.session_clients.get(event.session_id, [])
+                print(f"[WorkflowStreamer] Event session_id: {event.session_id}, found {len(session_clients)} session clients")
                 for client_id in session_clients:
                     if client_id in self.clients and client_id not in workflow_clients:  # Avoid duplicates
                         try:
                             self.clients[client_id].put_nowait(event)
+                            print(f"[WorkflowStreamer] Sent {event.event_type} event to session client {client_id}")
                         except queue.Full:
                             print(f"[WorkflowStreamer] Client {client_id} queue full, skipping event")
             
@@ -420,6 +436,111 @@ class WorkflowStreamer:
                 "message": f"Error: {error_message}"
             }
         )
+        self.emit_event(event)
+    
+    def emit_agent_started(self, workflow_id: str, session_id: str, agent_name: str, agent_type: str):
+        """Emit agent started event."""
+        event = StreamEvent(
+            event_type=EventType.AGENT_STARTED,
+            workflow_id=workflow_id,
+            timestamp=datetime.utcnow(),
+            session_id=session_id,
+            step_id="agent_execution",
+            data={
+                "agent_name": agent_name,
+                "agent_type": agent_type,
+                "message": f"🚀 Starting agent: {agent_name} ({agent_type})"
+            }
+        )
+        print(f"[WorkflowStreamer] Emitting agent started: {agent_name} ({agent_type})")
+        self.emit_event(event)
+    
+    def emit_payload_generation(self, workflow_id: str, session_id: str, agent_name: str, payload_preview: str = None):
+        """Emit payload generation event."""
+        event = StreamEvent(
+            event_type=EventType.PAYLOAD_GENERATION,
+            workflow_id=workflow_id,
+            timestamp=datetime.utcnow(),
+            session_id=session_id,
+            step_id="payload_generation",
+            data={
+                "agent_name": agent_name,
+                "payload_preview": payload_preview,
+                "message": f"📦 Generating payload for {agent_name}"
+            }
+        )
+        print(f"[WorkflowStreamer] Emitting payload generation for: {agent_name}")
+        self.emit_event(event)
+    
+    def emit_api_call(self, workflow_id: str, session_id: str, agent_name: str, endpoint: str, method: str = "POST"):
+        """Emit API call event."""
+        event = StreamEvent(
+            event_type=EventType.API_CALL,
+            workflow_id=workflow_id,
+            timestamp=datetime.utcnow(),
+            session_id=session_id,
+            step_id="api_call",
+            data={
+                "agent_name": agent_name,
+                "endpoint": endpoint,
+                "method": method,
+                "message": f"🌐 Calling service endpoint: {endpoint}"
+            }
+        )
+        print(f"[WorkflowStreamer] Emitting API call: {method} {endpoint}")
+        self.emit_event(event)
+    
+    def emit_service_response(self, workflow_id: str, session_id: str, agent_name: str, status_code: int, response_size: int = None):
+        """Emit service response event."""
+        event = StreamEvent(
+            event_type=EventType.SERVICE_RESPONSE,
+            workflow_id=workflow_id,
+            timestamp=datetime.utcnow(),
+            session_id=session_id,
+            step_id="service_response",
+            data={
+                "agent_name": agent_name,
+                "status_code": status_code,
+                "response_size": response_size,
+                "message": f"📨 Got response from {agent_name}: {status_code}" + (f" ({response_size} bytes)" if response_size else "")
+            }
+        )
+        print(f"[WorkflowStreamer] Emitting service response: {status_code}")
+        self.emit_event(event)
+    
+    def emit_query_execution(self, workflow_id: str, session_id: str, database_type: str, query_preview: str):
+        """Emit query execution event."""
+        event = StreamEvent(
+            event_type=EventType.QUERY_EXECUTION,
+            workflow_id=workflow_id,
+            timestamp=datetime.utcnow(),
+            session_id=session_id,
+            step_id="query_execution",
+            data={
+                "database_type": database_type,
+                "query_preview": query_preview,
+                "message": f"⚡ Executing ({database_type}) query: {query_preview[:100]}..."
+            }
+        )
+        print(f"[WorkflowStreamer] Emitting query execution: {database_type}")
+        self.emit_event(event)
+    
+    def emit_query_results(self, workflow_id: str, session_id: str, database_type: str, row_count: int, execution_time: float = None):
+        """Emit query results event."""
+        event = StreamEvent(
+            event_type=EventType.QUERY_RESULTS,
+            workflow_id=workflow_id,
+            timestamp=datetime.utcnow(),
+            session_id=session_id,
+            step_id="query_results",
+            data={
+                "database_type": database_type,
+                "row_count": row_count,
+                "execution_time": execution_time,
+                "message": f"📊 Retrieved {row_count} rows from {database_type}" + (f" in {execution_time:.2f}s" if execution_time else "")
+            }
+        )
+        print(f"[WorkflowStreamer] Emitting query results: {row_count} rows")
         self.emit_event(event)
     
     async def stream_events(self, client_id: str) -> AsyncGenerator[str, None]:

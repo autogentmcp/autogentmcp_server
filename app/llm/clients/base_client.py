@@ -39,5 +39,10 @@ class BaseLLMClient(ABC):
         """Test connection - must be implemented by subclass."""
         pass
     
+    @abstractmethod
+    async def generate_response(self, messages: list, **kwargs) -> str:
+        """Generate response from messages - must be implemented by subclass."""
+        pass
+    
     # Common prompt generation methods can be added here
     # For now, keeping it simple and focused

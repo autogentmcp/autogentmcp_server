@@ -11,6 +11,20 @@ from ..config import UI_MESSAGES
 from .progress import ProgressDisplay, WorkflowProgressRenderer
 from .agent_selector import AgentSelector
 
+# Import the enhanced visualization module
+try:
+    import sys
+    import os
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    
+    from enhanced_visualization import render_data_visualization
+    HAS_ENHANCED_VIZ = True
+except ImportError as e:
+    print(f"[ChatInterface] Enhanced visualization not available: {e}")
+    HAS_ENHANCED_VIZ = False
+
 
 class ChatInterface:
     """Main chat interface component"""
@@ -134,7 +148,14 @@ class ChatInterface:
                         metadata = message["metadata"]
                         if metadata:
                             with st.expander("📊 Response Details"):
-                                st.json(metadata)
+                                try:
+                                    # Create a safe copy of metadata for JSON display
+                                    safe_metadata = self._make_json_serializable(metadata)
+                                    st.json(safe_metadata)
+                                except Exception as e:
+                                    st.error(f"Error displaying metadata: {str(e)}")
+                                    st.write("Raw metadata:")
+                                    st.write(str(metadata)[:1000] + "..." if len(str(metadata)) > 1000 else str(metadata))
         
         # Chat input
         self._render_chat_input()
@@ -323,20 +344,36 @@ class ChatInterface:
                 st.json(response)
     
     def _render_data_results(self, results: list):
-        """Render data visualization results"""
-        # This would import and use the enhanced_visualization module
-        # For now, just show a placeholder
-        if results:
-            with st.expander("📊 Query Results", expanded=True):
-                for i, result in enumerate(results):
-                    st.subheader(f"Result {i+1}")
-                    if isinstance(result, dict):
-                        if result.get("data"):
-                            st.dataframe(result["data"])
-                        else:
-                            st.json(result)
+        """Render data visualization results with enhanced charts"""
+        if not results:
+            return
+            
+        with st.expander("📊 Query Results & Visualizations", expanded=True):
+            for i, result in enumerate(results):
+                if isinstance(result, dict):
+                    # Extract data and visualization spec
+                    data = result.get("data", [])
+                    visualization = result.get("visualization", {})
+                    agent_name = result.get("agent_name", f"Agent {i+1}")
+                    
+                    st.subheader(f"📈 {agent_name}")
+                    
+                    if data and HAS_ENHANCED_VIZ:
+                        # Use enhanced visualization if available
+                        try:
+                            render_data_visualization(data, visualization)
+                        except Exception as e:
+                            print(f"[ChatInterface] Enhanced visualization failed: {e}")
+                            # Fallback to simple dataframe
+                            st.dataframe(data)
+                    elif data:
+                        # Fallback to simple dataframe
+                        st.dataframe(data)
                     else:
-                        st.write(result)
+                        # Show the result as-is
+                        st.json(result)
+                else:
+                    st.write(result)
     
     def _create_new_conversation(self) -> str:
         """Create a new conversation"""
@@ -373,3 +410,74 @@ class ChatInterface:
         except Exception as e:
             st.error(f"Error loading conversations: {e}")
             return []
+    
+    def _make_json_serializable(self, obj, max_depth=10, current_depth=0, seen=None):
+        """
+        Recursively make an object JSON serializable by handling circular references
+        and non-serializable types
+        """
+        if seen is None:
+            seen = set()
+        
+        # Prevent infinite recursion
+        if current_depth > max_depth:
+            return "<max_depth_reached>"
+        
+        # Handle None
+        if obj is None:
+            return None
+        
+        # Check for circular references using object ID
+        obj_id = id(obj)
+        if obj_id in seen:
+            return "<circular_reference>"
+        
+        # Handle primitive types
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+        
+        # Add object to seen set
+        seen.add(obj_id)
+        
+        try:
+            # Handle lists
+            if isinstance(obj, list):
+                result = []
+                for item in obj:
+                    result.append(self._make_json_serializable(item, max_depth, current_depth + 1, seen.copy()))
+                return result
+            
+            # Handle dictionaries
+            elif isinstance(obj, dict):
+                result = {}
+                for key, value in obj.items():
+                    # Convert key to string if it's not already
+                    safe_key = str(key) if not isinstance(key, str) else key
+                    result[safe_key] = self._make_json_serializable(value, max_depth, current_depth + 1, seen.copy())
+                return result
+            
+            # Handle other iterables (tuples, sets, etc.)
+            elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes)):
+                try:
+                    return [self._make_json_serializable(item, max_depth, current_depth + 1, seen.copy()) for item in obj]
+                except:
+                    return str(obj)
+            
+            # Handle objects with __dict__
+            elif hasattr(obj, '__dict__'):
+                result = {}
+                for key, value in obj.__dict__.items():
+                    if not key.startswith('_'):  # Skip private attributes
+                        safe_key = str(key)
+                        result[safe_key] = self._make_json_serializable(value, max_depth, current_depth + 1, seen.copy())
+                return result
+            
+            # For everything else, convert to string
+            else:
+                return str(obj)
+                
+        except Exception as e:
+            return f"<serialization_error: {str(e)}>"
+        finally:
+            # Remove from seen set when exiting this level
+            seen.discard(obj_id)

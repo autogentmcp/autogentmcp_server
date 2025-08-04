@@ -32,6 +32,7 @@ class ExecutionContext:
     user_query: str
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
     results: List[Dict[str, Any]] = field(default_factory=list)
+    workflow_streamer: Optional[Any] = None  # Reference to workflow streamer for events
     
 class SimpleOrchestrator:
     """Simple orchestrator with one clean workflow"""
@@ -52,6 +53,7 @@ class SimpleOrchestrator:
             
         workflow_id = str(uuid.uuid4())
         context = ExecutionContext(workflow_id, session_id, user_query)
+        context.workflow_streamer = workflow_streamer  # Add workflow streamer to context
         
         # Get conversation history
         context.conversation_history = self._get_conversation_history(session_id)
@@ -373,7 +375,7 @@ Respond with JSON:
     
     async def _execute_single(self, context: ExecutionContext, step: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Execute single agent"""
-        result = await self._execute_agent(step["agent_id"], step["query"])
+        result = await self._execute_agent(step["agent_id"], step["query"], context.workflow_id, context.session_id)
         return [result]
     
     async def _execute_sequential(self, context: ExecutionContext, steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -391,7 +393,7 @@ Respond with JSON:
                         step["query"], prev_result
                     )
             
-            result = await self._execute_agent(step["agent_id"], step["query"])
+            result = await self._execute_agent(step["agent_id"], step["query"], context.workflow_id, context.session_id)
             results.append(result)
             agent_results[step["agent_id"]] = result
             
@@ -401,7 +403,7 @@ Respond with JSON:
         """Execute agents in parallel"""
         tasks = []
         for step in steps:
-            task = self._execute_agent(step["agent_id"], step["query"])
+            task = self._execute_agent(step["agent_id"], step["query"], context.workflow_id, context.session_id)
             tasks.append(task)
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -434,7 +436,7 @@ Respond with JSON:
             visualization=result_dict.get("visualization")
         )
     
-    async def _execute_agent(self, agent_id: str, query: str) -> Dict[str, Any]:
+    async def _execute_agent(self, agent_id: str, query: str, workflow_id: str, session_id: str) -> Dict[str, Any]:
         """Execute a single agent"""
         try:
             agents = fetch_agents_and_tools_from_registry()
@@ -444,6 +446,13 @@ Respond with JSON:
                 return {"agent_id": agent_id, "success": False, "error": "Agent not found"}
             
             agent_type = agent.get("agent_type")
+            agent_name = agent.get("name", agent_id)
+            
+            # Emit agent started event
+            workflow_streamer.emit_agent_started(
+                workflow_id, session_id, 
+                agent_name, agent_type
+            )
             
             if agent_type == "data_agent":
                 # Use the proper DataAgentExecutor with table selection workflow
@@ -451,10 +460,11 @@ Respond with JSON:
                 
                 # Create execution context for streaming
                 context = ExecutionContext(
-                    workflow_id=str(uuid.uuid4()),
-                    session_id="temp_session",  # This could be passed from the main workflow
+                    workflow_id=workflow_id,
+                    session_id=session_id,  # Use the proper session_id passed to the method
                     user_query=query
                 )
+                context.workflow_streamer = workflow_streamer  # Add workflow streamer to context
                 
                 # Execute using the proper data agent workflow
                 result = await self.data_agent_executor.execute_data_agent(agent_id, query, context)
@@ -503,6 +513,25 @@ Respond with JSON:
                     }
             
             elif agent_type == "application":
+                # Emit payload generation event
+                workflow_streamer.emit_payload_generation(
+                    workflow_id, session_id, 
+                    agent_name, query[:100]
+                )
+                
+                # Simulate service call
+                base_domain = agent.get("base_domain", "unknown")
+                workflow_streamer.emit_api_call(
+                    workflow_id, session_id, 
+                    agent_name, base_domain, "POST"
+                )
+                
+                # Simulate service response
+                workflow_streamer.emit_service_response(
+                    workflow_id, session_id, 
+                    agent_name, 200, 1024
+                )
+                
                 # Simplified application execution
                 return {
                     "agent_id": agent_id,

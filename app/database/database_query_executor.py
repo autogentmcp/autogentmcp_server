@@ -232,7 +232,8 @@ class DatabaseQueryExecutor:
         vault_key: str, 
         connection_type: str, 
         sql_query: str,
-        limit: int = 100
+        limit: int = 100,
+        connection_config: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
         Execute SQL query against the database with vault caching support.
@@ -242,6 +243,7 @@ class DatabaseQueryExecutor:
             connection_type: Type of database (postgresql, mysql, etc.)
             sql_query: SQL query to execute
             limit: Maximum number of rows to return
+            connection_config: Optional connection config from registry (takes priority over vault credentials)
             
         Returns:
             Dictionary with query results
@@ -252,6 +254,7 @@ class DatabaseQueryExecutor:
             print(f"[DatabaseQueryExecutor.execute_query] Vault key: {vault_key}")
             print(f"[DatabaseQueryExecutor.execute_query] Original query: {sql_query}")
             print(f"[DatabaseQueryExecutor.execute_query] Limit: {limit}")
+            print(f"[DatabaseQueryExecutor.execute_query] Connection config provided: {bool(connection_config)}")
             
             # Get credentials from vault (with caching)
             credentials = vault_manager.get_secret(vault_key)
@@ -264,6 +267,14 @@ class DatabaseQueryExecutor:
             
             print(f"[DatabaseQueryExecutor] Retrieved credentials for vault key: {vault_key}")
             print(f"[DatabaseQueryExecutor] Credential keys: {list(credentials.keys())}")
+            
+            # Merge connection config from registry if provided (takes priority)
+            if connection_config:
+                print(f"[DatabaseQueryExecutor] Merging connection config from registry: {connection_config}")
+                # Create a copy of credentials and add connectionConfig
+                credentials = credentials.copy()
+                credentials["connectionConfig"] = connection_config
+                print(f"[DatabaseQueryExecutor] Updated credential keys after merge: {list(credentials.keys())}")
             
             # Debug: Check if password looks base64 encoded (only for databases that use passwords)
             password_based_dbs = ["postgresql", "mysql", "mssql", "sqlserver", "db2"]
@@ -565,7 +576,38 @@ class DatabaseQueryExecutor:
             
             # Handle service account credentials - check both camelCase and snake_case
             service_account_json = credentials.get("serviceAccountJson") or credentials.get("service_account_json")
-            project_id = credentials.get("projectId") or credentials.get("project_id")
+            
+            # Check for connection config first (higher priority than service account JSON)
+            connection_config = credentials.get("connectionConfig", {})
+            print(f"[DatabaseQueryExecutor] Using connection config for BigQuery {connection_config}")
+            print(f"[DatabaseQueryExecutor] Available credential keys: {list(credentials.keys())}")
+            
+            # If connectionConfig is empty, check if connection details are directly in credentials
+            if not connection_config:
+                # Check for direct connection fields in credentials
+                direct_config = {}
+                for key in ["projectId", "project_id", "database", "dataset", "host", "port", "schema"]:
+                    if key in credentials:
+                        direct_config[key] = credentials[key]
+                if direct_config:
+                    print(f"[DatabaseQueryExecutor] Found direct connection config: {direct_config}")
+                    connection_config = direct_config
+            
+            config_project_id = (connection_config.get("projectId") or 
+                                connection_config.get("project_id") or
+                                connection_config.get("database") or
+                                connection_config.get("dataset"))
+            
+            # Fallback to direct credentials
+            fallback_project_id = credentials.get("projectId") or credentials.get("project_id")
+            
+            # Final project ID selection with logging
+            project_id = config_project_id or fallback_project_id
+            
+            print(f"[DatabaseQueryExecutor] BigQuery project selection:")
+            print(f"  - Connection config project: {config_project_id}")
+            print(f"  - Credentials project: {fallback_project_id}")
+            print(f"  - Selected project: {project_id}")
             
             if service_account_json:
                 print(f"[DatabaseQueryExecutor] Using service account authentication for BigQuery")
@@ -578,8 +620,12 @@ class DatabaseQueryExecutor:
                     temp_creds_path = f.name
                 
                 try:
-                    # Initialize client with service account
-                    client = bigquery.Client.from_service_account_json(temp_creds_path)
+                    # Initialize client with service account and override project if specified
+                    if project_id:
+                        print(f"[DatabaseQueryExecutor] Overriding service account project with: {project_id}")
+                        client = bigquery.Client.from_service_account_json(temp_creds_path, project=project_id)
+                    else:
+                        client = bigquery.Client.from_service_account_json(temp_creds_path)
                 finally:
                     # Clean up temporary file
                     os.unlink(temp_creds_path)

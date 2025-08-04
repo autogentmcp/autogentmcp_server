@@ -122,6 +122,9 @@ class MCPBackendService:
                     event_data = json.loads(event.data)
                     event_type = event_data.get("type", "")
                     
+                    # Debug: Log all events to see what we're getting
+                    print(f"[MCPBackendService] Raw event: type='{event_type}', data keys: {list(event_data.keys()) if isinstance(event_data, dict) else 'not_dict'}")
+                    
                     # Skip debug events
                     if event_type == "enhanced_event" and event_data.get("event_type") == "debug_info":
                         continue
