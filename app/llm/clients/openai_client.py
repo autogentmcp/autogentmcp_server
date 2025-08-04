@@ -103,15 +103,18 @@ class OpenAIClient(BaseLLMClient):
         # API Key (required)
         api_key = os.getenv(OPENAI_ENV_VARS["OPENAI_API_KEY"], "")
         
-        # URL Configuration - Proxy and Base URL are separate concepts
+        # URL Configuration - Proxy URL replaces base URL if provided
         proxy_url = os.getenv(OPENAI_ENV_VARS["OPENAI_PROXY_URL"])
         base_url = os.getenv(OPENAI_ENV_VARS["OPENAI_BASE_URL"])
         
-        # Base URL should always be OpenAI's API unless explicitly overridden
-        final_base_url = base_url or "https://api.openai.com/v1"
-        
-        # Proxy is handled separately in HTTP client configuration
-        is_proxy_used = bool(proxy_url)
+        # If proxy URL is provided, use it as the base URL (simplified approach)
+        if proxy_url:
+            final_base_url = proxy_url
+            is_proxy_used = True
+            print(f"[OpenAIClient] Using proxy URL as base URL: {proxy_url}")
+        else:
+            final_base_url = base_url or "https://api.openai.com/v1"
+            is_proxy_used = False
         
         # Model configuration - only use OpenAI-specific model, don't fall back to general LLM_MODEL
         model = os.getenv("OPENAI_MODEL") or os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4o-mini")
@@ -194,13 +197,11 @@ class OpenAIClient(BaseLLMClient):
                                    legacy_cert_key: Optional[str] = None,
                                    legacy_ca_bundle: Optional[str] = None,
                                    legacy_verify_ssl: Optional[bool] = None) -> Optional[httpx.AsyncClient]:
-        """Create HTTP client with secure SSL configuration and proxy support."""
+        """Create HTTP client with secure SSL configuration."""
         ssl_config = config["ssl_config"]
-        proxy_url = config.get("proxy_url")
         
         # Check if any customization is needed
         needs_custom_client = (
-            proxy_url or
             not ssl_config["verify"] or
             ssl_config.get("ca_bundle") or
             ssl_config.get("cert") or
@@ -211,7 +212,7 @@ class OpenAIClient(BaseLLMClient):
         if not needs_custom_client:
             return None  # Use default HTTP client
         
-        print(f"[OpenAIClient] Configuring custom HTTP client")
+        print(f"[OpenAIClient] Configuring custom HTTP client for SSL/TLS")
         
         # Create SSL context
         ssl_context = ssl.create_default_context()
@@ -260,19 +261,11 @@ class OpenAIClient(BaseLLMClient):
             else:
                 print(f"[OpenAIClient] Warning: Certificate file not found: {cert_file}")
         
-        # Configure HTTP client with proxy and SSL
+        # Configure HTTP client with SSL
         client_config = {
             "verify": ssl_context,
             "timeout": httpx.Timeout(60.0)
         }
-        
-        # Add proxy configuration if provided
-        if proxy_url:
-            client_config["proxies"] = {
-                "http://": proxy_url,
-                "https://": proxy_url
-            }
-            print(f"[OpenAIClient] Configured HTTP/HTTPS proxy: {proxy_url}")
         
         return httpx.AsyncClient(**client_config)
     
