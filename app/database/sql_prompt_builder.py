@@ -21,11 +21,21 @@ class SQLPromptBuilder:
 
 {sample_queries}
 
+## CRITICAL COLUMN VALIDATION RULES:
+- You MUST ONLY use the exact column names listed in the schema above
+- Do NOT make assumptions about column names (e.g., created_ts, updated_ts, etc.)
+- If you need a timestamp/date column, use ONLY the columns that exist in the schema
+- VERIFY each column name exists in the schema before using it
+- When in doubt about column names, prefer the ones explicitly listed in the schema
+
+{validation_feedback}
+
 ## CRITICAL RULES:
 - ONLY use exact table names and column names from the schema above
 - Include schema prefix (e.g., "schema.table_name")
 - Use table aliases (e.g., "t" for table)
 - Target dialect: {dialect}
+- Never use column names that don't exist in the provided schema
 
 {specific_rules}
 
@@ -65,7 +75,8 @@ Generate the SQL now."""
                     query_type: Optional[str] = None,
                     custom_prompt: str = "",
                     sample_queries: Optional[List[str]] = None,
-                    business_context: str = "") -> str:
+                    business_context: str = "",
+                    validation_feedback: str = "") -> str:
         """
         Build an optimized prompt based on query type and database
         
@@ -77,6 +88,7 @@ Generate the SQL now."""
             custom_prompt: Agent-specific custom guidelines and instructions
             sample_queries: Example queries that work with this database
             business_context: Business context and table descriptions
+            validation_feedback: Feedback from previous validation failures for retry attempts
         """
         
         # Filter schema to only relevant tables
@@ -114,7 +126,8 @@ Generate the SQL now."""
             specific_rules=specific_rules,
             custom_prompt=custom_prompt_section,
             business_context=business_context_section,
-            sample_queries=sample_queries_section
+            sample_queries=sample_queries_section,
+            validation_feedback=validation_feedback
         )
     
     def _filter_relevant_schema(self, query: str, schema: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -123,8 +136,9 @@ Generate the SQL now."""
         return schema
     
     def _simplify_schema(self, schema: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Simplify schema to essential information only"""
+        """Simplify schema to essential information only with explicit column validation"""
         simplified = []
+        all_columns = []  # Track all available columns for validation
         
         for table in schema:  # Pass ALL tables for accurate query generation
             simplified_table = {
@@ -136,10 +150,15 @@ Generate the SQL now."""
             # Include all columns for accurate schema representation
             columns = table.get("columns", [])
             for col in columns:
+                col_name = col.get("name", "")
                 col_info = {
-                    "name": col.get("name", ""),
+                    "name": col_name,
                     "type": col.get("type", "")
                 }
+                
+                # Track all column names for validation
+                if col_name:
+                    all_columns.append(f"{simplified_table['table']}.{col_name}")
                 
                 # Add AI description for better LLM understanding
                 if col.get("aiDescription"):
@@ -152,6 +171,14 @@ Generate the SQL now."""
                 simplified_table["columns"].append(col_info)
             
             simplified.append(simplified_table)
+        
+        # Add explicit column validation section
+        if all_columns:
+            simplified.insert(0, {
+                "VALIDATION_NOTE": "ONLY_USE_THESE_COLUMNS",
+                "available_columns": all_columns[:50],  # Show first 50 columns for reference
+                "total_columns": len(all_columns)
+            })
         
         return simplified
     
