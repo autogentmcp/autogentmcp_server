@@ -19,6 +19,8 @@ from app.workflows.workflow_streamer import workflow_streamer
 from app.llm import MultiModeLLMClient
 from app.registry.client import fetch_agents_and_tools_from_registry, get_enhanced_agent_details_for_llm
 from app.database.database_query_executor import DatabaseQueryExecutor
+from app.orchestrator.agents.data_agent import DataAgentExecutor
+from app.orchestrator.models import ExecutionContext
 
 @dataclass
 class ExecutionContext:
@@ -35,6 +37,7 @@ class SimpleOrchestrator:
     def __init__(self):
         self.llm_client = MultiModeLLMClient()
         self.db_executor = DatabaseQueryExecutor()
+        self.data_agent_executor = DataAgentExecutor()
         self._conversation_memory = {}  # Enhanced conversation storage
         self._conversation_summaries = {}  # Rolling summaries of older conversations
         
@@ -373,7 +376,7 @@ Respond with JSON:
     
     async def _execute_single(self, context: ExecutionContext, step: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Execute single agent"""
-        result = await self._execute_agent(step["agent_id"], step["query"])
+        result = await self._execute_agent(step["agent_id"], step["query"], context.workflow_id, context.session_id)
         return [result]
     
     async def _execute_sequential(self, context: ExecutionContext, steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -391,7 +394,7 @@ Respond with JSON:
                         step["query"], prev_result
                     )
             
-            result = await self._execute_agent(step["agent_id"], step["query"])
+            result = await self._execute_agent(step["agent_id"], step["query"], context.workflow_id, context.session_id)
             results.append(result)
             agent_results[step["agent_id"]] = result
             
@@ -401,7 +404,7 @@ Respond with JSON:
         """Execute agents in parallel"""
         tasks = []
         for step in steps:
-            task = self._execute_agent(step["agent_id"], step["query"])
+            task = self._execute_agent(step["agent_id"], step["query"], context.workflow_id, context.session_id)
             tasks.append(task)
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -420,7 +423,7 @@ Respond with JSON:
                 
         return final_results
     
-    async def _execute_agent(self, agent_id: str, query: str) -> Dict[str, Any]:
+    async def _execute_agent(self, agent_id: str, query: str, workflow_id: str = None, session_id: str = None) -> Dict[str, Any]:
         """Execute a single agent"""
         try:
             agents = fetch_agents_and_tools_from_registry()
@@ -432,38 +435,36 @@ Respond with JSON:
             agent_type = agent.get("agent_type")
             
             if agent_type == "data_agent":
-                # Get detailed agent information including vault_key
-                agent_details = get_enhanced_agent_details_for_llm(agent_id)
-                
-                # Generate SQL and execute
-                sql_query = await self._generate_sql(agent_id, query)
-                
-                # Get connection config from registry for BigQuery project override
-                connection_config = agent_details.get("connection_info", {})
-                print(f"[SimpleOrchestrator] Using connection config from registry: {connection_config}")
-                
-                result = self.db_executor.execute_query(
-                    agent_details.get("vault_key"),
-                    agent_details.get("connection_type", "mssql"),
-                    sql_query,
-                    connection_config=connection_config
+                # Create execution context for data agent
+                context = ExecutionContext(
+                    workflow_id=workflow_id or "simple_workflow",
+                    session_id=session_id or "simple_session",
+                    workflow_streamer=workflow_streamer
                 )
                 
-                if result.get("status") == "success":
+                # Use the sophisticated DataAgentExecutor
+                result = await self.data_agent_executor.execute_data_agent(agent_id, query, context)
+                
+                # Convert AgentResult to simple orchestrator format
+                if result.success:
                     return {
                         "agent_id": agent_id,
-                        "agent_name": agent.get("name"),
+                        "agent_name": result.agent_name,
                         "success": True,
-                        "data": result.get("data"),
-                        "row_count": len(result.get("data", [])),
-                        "query": sql_query
+                        "data": result.data,
+                        "row_count": result.row_count,
+                        "query": result.query,
+                        "metadata": result.metadata,
+                        "visualization": result.visualization
                     }
                 else:
                     return {
                         "agent_id": agent_id,
-                        "agent_name": agent.get("name"),
+                        "agent_name": result.agent_name,
                         "success": False,
-                        "error": result.get("error")
+                        "error": result.error,
+                        "metadata": result.metadata,
+                        "visualization": result.visualization
                     }
             
             elif agent_type == "application":
@@ -481,165 +482,6 @@ Respond with JSON:
                 "success": False,
                 "error": str(e)
             }
-    
-    async def _generate_sql(self, agent_id: str, query: str) -> str:
-        """Generate SQL for data agent with comprehensive context including agent description, table descriptions, and sample queries"""
-        # Get agent schema info
-        agent_details = get_enhanced_agent_details_for_llm(agent_id)
-        
-        # Get database type for specific SQL syntax
-        database_type = agent_details.get("database_type", "unknown")
-        connection_type = agent_details.get("connection_type", "unknown")
-        
-        # Extract business context and agent description
-        agent_name = agent_details.get("name", "Unknown Agent")
-        agent_description = agent_details.get("description", "")
-        business_context = agent_details.get("business_context", "")
-        
-        # Get custom prompt from environment configuration
-        custom_prompt = ""
-        environments = agent_details.get("environments", [])
-        if environments:
-            # Find the active environment or use the first one
-            active_env = next((env for env in environments if env.get("status") == "ACTIVE"), environments[0] if environments else None)
-            if active_env:
-                custom_prompt = active_env.get("customPrompt", "")
-        
-        # Create comprehensive context for SQL generation
-        context_text = f"AGENT CONTEXT:\n"
-        context_text += f"Agent: {agent_name}\n"
-        if agent_description:
-            context_text += f"Purpose: {agent_description}\n"
-        if business_context and business_context != agent_description:
-            context_text += f"Business Context: {business_context}\n"
-        if custom_prompt:
-            context_text += f"Custom Instructions: {custom_prompt}\n"
-        context_text += f"Database Type: {database_type}/{connection_type}\n\n"
-        
-        # Create detailed schema summary with table descriptions
-        tables = agent_details.get("tables_with_columns", [])
-        schema_text = "DATABASE SCHEMA:\n"
-        
-        for table in tables[:10]:  # Limit tables to prevent token overflow
-            table_name = table.get('tableName')
-            schema_name = table.get('schemaName', 'dbo')
-            description = table.get('description', '')
-            row_count = table.get('rowCount', 0)
-            
-            full_table_name = f"{schema_name}.{table_name}" if schema_name != "public" else table_name
-            schema_text += f"\nTable: {full_table_name} ({row_count:,} rows)\n"
-            
-            # Add table description if available
-            if description:
-                schema_text += f"Description: {description}\n"
-            
-            columns = table.get("columns", [])[:15]  # Show more columns for better context
-            for col in columns:
-                col_name = col.get('columnName', '')
-                data_type = col.get('dataType', '')
-                is_pk = col.get('isPrimaryKey', False)
-                is_fk = col.get('isForeignKey', False)
-                
-                markers = []
-                if is_pk: markers.append("PK")
-                if is_fk: markers.append("FK")
-                marker_text = f" [{', '.join(markers)}]" if markers else ""
-                
-                schema_text += f"  - {col_name} ({data_type}){marker_text}\n"
-            
-            if len(table.get("columns", [])) > 15:
-                schema_text += f"  ... and {len(table.get('columns', [])) - 15} more columns\n"
-            schema_text += "\n"
-        
-        # Add sample queries if available
-        # sample_queries = agent_details.get("sample_queries", [])
-        # examples_text = ""
-        # if sample_queries:
-        #     examples_text = "SAMPLE QUERIES FOR REFERENCE:\n"
-        #     for i, query_example in enumerate(sample_queries[:3], 1):  # Show up to 3 examples
-        #         examples_text += f"Example {i}:\n{query_example}\n\n"
-        
-        # Database-specific instructions
-        db_instructions = ""
-        if database_type.lower() in ["mssql", "sqlserver"] or connection_type.lower() == "mssql":
-            db_instructions = """
-DATABASE-SPECIFIC NOTES for SQL Server:
-- Use TOP instead of LIMIT: SELECT TOP 10 columns FROM table
-- Use square brackets for reserved words: [order], [user]
-- Date functions: GETDATE(), DATEPART(), DATEDIFF()
-- String functions: LEN(), SUBSTRING(), CONCAT()
-"""
-        elif database_type.lower() in ["mysql"]:
-            db_instructions = """
-DATABASE-SPECIFIC NOTES for MySQL:
-- Use LIMIT for row limiting: SELECT columns FROM table LIMIT 10
-- Use backticks for reserved words: `order`, `user`
-- Date functions: NOW(), DATE_FORMAT(), DATEDIFF()
-- String functions: LENGTH(), SUBSTRING(), CONCAT()
-"""
-        elif database_type.lower() in ["postgresql", "postgres"]:
-            db_instructions = """
-DATABASE-SPECIFIC NOTES for PostgreSQL:
-- Use LIMIT for row limiting: SELECT columns FROM table LIMIT 10
-- Use double quotes for case-sensitive names: "Order", "User"
-- Date functions: NOW(), EXTRACT(), AGE()
-- String functions: LENGTH(), SUBSTRING(), CONCAT()
-"""
-        elif database_type.lower() in ["bigquery"]:
-            db_instructions = """
-DATABASE-SPECIFIC NOTES for BigQuery:
-- Use LIMIT for row limiting: SELECT columns FROM table LIMIT 10
-- Use backticks for table references: `project.dataset.table`
-- Date functions: CURRENT_DATE(), DATE_SUB(), DATE_TRUNC()
-- String functions: LENGTH(), SUBSTR(), CONCAT()
-- Aggregation: Use GROUP BY with aggregate functions
-"""
-        
-        prompt = f"""
-Generate an efficient SQL query for this request: "{query}"
-
-{context_text}
-
-{schema_text}
-
-{examples_text}
-
-{db_instructions}
-
-QUERY OPTIMIZATION GUIDELINES:
-1. **Context Awareness**: Use the agent's business context to understand the domain and purpose
-2. **Table Descriptions**: Leverage table descriptions to understand what data each table contains
-3. **Sample Queries**: Reference the provided examples for query patterns and best practices
-4. **Column Selection**: Use specific column names based on the schema, avoid SELECT *
-5. **Result Limiting**: Always limit results to a reasonable number (TOP 10-50 for most queries)
-6. **Meaningful Sorting**: Add ORDER BY clauses for logical data presentation
-7. **Efficient Filtering**: Use WHERE clauses to filter data when possible
-8. **Proper Joins**: Use table relationships shown in the schema for joins
-9. **Data Types**: Consider column data types when writing conditions
-10. **Business Logic**: Apply domain knowledge from the agent description
-
-RESPONSE FORMAT:
-- Return ONLY the SQL query, no explanation
-- Make it executable and syntactically correct
-- Focus on answering the user's question efficiently
-- Use the business context to make intelligent assumptions about what data to retrieve
-"""
-        
-        response = self.llm_client.invoke(prompt)
-        sql = response.content.strip()
-        
-        # Clean SQL and remove any markdown formatting
-        sql = sql.replace("```sql", "").replace("```", "").strip()
-        
-        # Remove any explanatory text that might have been added
-        lines = sql.split('\n')
-        sql_lines = []
-        for line in lines:
-            # Skip lines that look like comments or explanations
-            if not line.strip().startswith('--') and not line.strip().startswith('/*') and line.strip():
-                sql_lines.append(line)
-        
-        return '\n'.join(sql_lines).strip()
     
     async def _enhance_query_with_context(self, query: str, prev_result: Dict[str, Any]) -> str:
         """Enhance query with context from previous result"""
