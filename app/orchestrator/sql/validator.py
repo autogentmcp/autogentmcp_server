@@ -81,6 +81,21 @@ class SQLValidator:
         if len(sql) > 5000:
             warnings.append("Query is very long - consider breaking into smaller parts")
         
+        # BigQuery-specific validation
+        if re.search(r'TIMESTAMP_SUB\s*\([^)]*,\s*INTERVAL\s+\d+\s+MONTH\s*\)', sql_upper):
+            return {
+                "is_valid": False,
+                "error": "BigQuery error: TIMESTAMP_SUB doesn't support MONTH interval. Use DATE_SUB(DATE(timestamp_col), INTERVAL N MONTH) instead.",
+                "warnings": warnings
+            }
+        
+        if re.search(r'TIMESTAMP_SUB\s*\([^)]*,\s*INTERVAL\s+\d+\s+YEAR\s*\)', sql_upper):
+            return {
+                "is_valid": False,
+                "error": "BigQuery error: TIMESTAMP_SUB doesn't support YEAR interval. Use DATE_SUB(DATE(timestamp_col), INTERVAL N YEAR) instead.",
+                "warnings": warnings
+            }
+        
         return {"is_valid": True, "error": None, "warnings": warnings}
     
     @classmethod

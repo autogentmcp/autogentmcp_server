@@ -27,6 +27,7 @@ class SQLPromptBuilder:
 - If you need a timestamp/date column, use ONLY the columns that exist in the schema
 - VERIFY each column name exists in the schema before using it
 - When in doubt about column names, prefer the ones explicitly listed in the schema
+- For BigQuery: TIMESTAMP_SUB only supports DAY, HOUR, MINUTE, SECOND intervals - use DATE_SUB with DATE() conversion for MONTH/YEAR
 
 {validation_feedback}
 
@@ -192,7 +193,12 @@ Generate the SQL now."""
             rules.extend([
                 "- Use `LIMIT N` at end of query",
                 "- Use `DATE_TRUNC(date_col, MONTH)` for monthly aggregation",
-                "- Use backticks for reserved words: `column`"
+                "- Use backticks for reserved words: `column`",
+                "- For date arithmetic: Use `DATE_SUB(DATE(timestamp_col), INTERVAL 3 MONTH)` instead of TIMESTAMP_SUB with MONTH",
+                "- For timestamp arithmetic: Use `TIMESTAMP_SUB(timestamp_col, INTERVAL 7 DAY)` for day/hour/minute intervals only",
+                "- Convert TIMESTAMP to DATE for month/year operations: `DATE(timestamp_col)`",
+                "- Use `DATETIME_SUB` for DATETIME types with any interval",
+                "- Example: `WHERE DATE(created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)`"
             ])
         elif database_type.lower() in ["mssql", "sqlserver"]:
             rules.extend([
